@@ -53,3 +53,4 @@ local.properties
 *.log
 *.tmp
 *.temp
+.vercel
