@@ -1,0 +1,33 @@
+{
+    "cli": {
+      "version": ">= 16.24.0",
+      "appVersionSource": "remote"
+    },
+    "build": {
+      "development": {
+        "developmentClient": true,
+        "distribution": "internal"
+      },
+      "preview": {
+        "distribution": "internal"
+      },
+      "local": {
+        "ios": {
+          "simulator": true
+        }
+      },
+      "adhoc": {
+        "distribution": "internal",
+        "ios": {
+          "resourceClass": "default"
+        }
+      },
+      "production": {
+        "distribution": "internal",
+        "autoIncrement": true
+      }
+    },
+    "submit": {
+      "production": {}
+    }
+  }

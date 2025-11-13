@@ -1,0 +1,19 @@
+# Expo
+.expo/
+dist/
+web-build/
+
+# Node
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# Assets (large binary files)
+assets/icon.png
+assets/splash.png
+assets/adaptive-icon.png
+assets/notification-icon.png
+assets/favicon.png
+
