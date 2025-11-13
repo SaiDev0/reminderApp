@@ -18,6 +18,7 @@ Notifications.setNotificationHandler({
 export default function RootLayout() {
     const [isReady, setIsReady] = useState(false);
     const [isLocked, setIsLocked] = useState(true);
+    const [hasAuthenticated, setHasAuthenticated] = useState(false);
     const router = useRouter();
     const segments = useSegments();
 
@@ -63,12 +64,24 @@ export default function RootLayout() {
         if (!isReady) return;
 
         const inAuthGroup = segments[0] === 'auth';
+        const isInTabs = segments[0] === '(tabs)';
 
-        if (isLocked && !inAuthGroup) {
-            // Redirect to app-lock screen
+        // If user successfully navigated to tabs, they must have authenticated
+        // So unlock the app for this session
+        if (isInTabs && isLocked && !hasAuthenticated) {
+            setHasAuthenticated(true);
+            setIsLocked(false);
+            return;
+        }
+
+        // Only redirect to app-lock if:
+        // 1. App is locked
+        // 2. User hasn't authenticated yet
+        // 3. Not already in auth screens
+        if (isLocked && !hasAuthenticated && !inAuthGroup) {
             router.replace('/auth/app-lock');
         }
-    }, [isReady, isLocked, segments]);
+    }, [isReady, isLocked, segments, hasAuthenticated]);
 
     const requestNotificationPermissions = async () => {
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
