@@ -1,4 +1,13 @@
-export type BillFrequency = 'once' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
+export type BillFrequency =
+    | 'once'
+    | 'weekly'
+    | 'bi-weekly'        // Every 2 weeks
+    | 'monthly'
+    | 'bi-monthly'       // Every 2 months
+    | 'quarterly'        // Every 3 months
+    | 'semi-annually'    // Every 6 months
+    | 'yearly';
+
 export type BillStatus = 'pending' | 'paid' | 'overdue';
 export type BillCategory = 'utilities' | 'subscriptions' | 'insurance' | 'rent' | 'loans' | 'credit_card' | 'other';
 
@@ -14,6 +23,7 @@ export interface Bill {
     notes?: string;
     reminder_days_before: number[];
     auto_pay: boolean;
+    custom_day_of_month?: number; // For bills on specific day (1-31, or -1 for last day)
     created_at: string;
     updated_at: string;
 }
@@ -54,5 +64,24 @@ export interface BillAttachment {
     file_type: string;
     file_size: number;
     created_at: string;
+}
+
+export interface CategoryBudget {
+    id: string;
+    user_id: string;
+    category: BillCategory;
+    monthly_limit: number;
+    alert_threshold: number; // Percentage (e.g., 80 for 80%)
+    created_at: string;
+    updated_at: string;
+}
+
+export interface BudgetSummary {
+    category: BillCategory;
+    spent: number;
+    limit: number;
+    percentage: number;
+    remaining: number;
+    bills_count: number;
 }
 

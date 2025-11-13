@@ -25,9 +25,20 @@ export default function AddBillScreen() {
     const [notes, setNotes] = useState('');
     const [autoPay, setAutoPay] = useState(false);
     const [reminderDays, setReminderDays] = useState([7, 3, 1]);
+    const [customDayOfMonth, setCustomDayOfMonth] = useState<string>('');
     const [saving, setSaving] = useState(false);
 
-    const frequencies: BillFrequency[] = ['once', 'weekly', 'monthly', 'quarterly', 'yearly'];
+    const frequencies: { value: BillFrequency; label: string }[] = [
+        { value: 'once', label: 'One-time' },
+        { value: 'weekly', label: 'Weekly' },
+        { value: 'bi-weekly', label: 'Bi-weekly (Every 2 weeks)' },
+        { value: 'monthly', label: 'Monthly' },
+        { value: 'bi-monthly', label: 'Bi-monthly (Every 2 months)' },
+        { value: 'quarterly', label: 'Quarterly (Every 3 months)' },
+        { value: 'semi-annually', label: 'Semi-annually (Every 6 months)' },
+        { value: 'yearly', label: 'Yearly' },
+    ];
+
     const categories: BillCategory[] = [
         'utilities', 'subscriptions', 'insurance', 'rent', 'loans', 'credit_card', 'other'
     ];
@@ -54,6 +65,8 @@ export default function AddBillScreen() {
                 return;
             }
 
+            const dayOfMonth = customDayOfMonth ? parseInt(customDayOfMonth) : undefined;
+
             const { error } = await supabase.from('bills').insert({
                 user_id: user.id,
                 name: name.trim(),
@@ -64,6 +77,7 @@ export default function AddBillScreen() {
                 notes: notes.trim() || null,
                 auto_pay: autoPay,
                 reminder_days_before: reminderDays,
+                custom_day_of_month: dayOfMonth,
                 status: 'pending',
             });
 
@@ -151,25 +165,42 @@ export default function AddBillScreen() {
                     <View style={styles.chipContainer}>
                         {frequencies.map((freq) => (
                             <TouchableOpacity
-                                key={freq}
+                                key={freq.value}
                                 style={[
                                     styles.chip,
-                                    frequency === freq && styles.chipActive,
+                                    frequency === freq.value && styles.chipActive,
                                 ]}
-                                onPress={() => setFrequency(freq)}
+                                onPress={() => setFrequency(freq.value)}
                             >
                                 <Text
                                     style={[
                                         styles.chipText,
-                                        frequency === freq && styles.chipTextActive,
+                                        frequency === freq.value && styles.chipTextActive,
                                     ]}
                                 >
-                                    {freq}
+                                    {freq.label}
                                 </Text>
                             </TouchableOpacity>
                         ))}
                     </View>
                 </View>
+
+                {/* Custom Day of Month - optional field for recurring bills */}
+                {frequency !== 'once' && frequency !== 'weekly' && frequency !== 'bi-weekly' && (
+                    <View style={styles.inputGroup}>
+                        <Text style={styles.label}>Specific Day of Month (Optional)</Text>
+                        <TextInput
+                            style={styles.input}
+                            placeholder="e.g., 1, 15, or -1 for last day"
+                            value={customDayOfMonth}
+                            onChangeText={setCustomDayOfMonth}
+                            keyboardType="numeric"
+                        />
+                        <Text style={styles.helpText}>
+                            Leave empty to use the current due date day. Use -1 for last day of month.
+                        </Text>
+                    </View>
+                )}
 
                 <View style={styles.inputGroup}>
                     <Text style={styles.label}>Category</Text>
@@ -385,6 +416,12 @@ const styles = StyleSheet.create({
     },
     textArea: {
         minHeight: 100,
+    },
+    helpText: {
+        fontSize: 12,
+        color: '#666',
+        marginTop: 4,
+        fontStyle: 'italic',
     },
     saveButton: {
         backgroundColor: '#007AFF',

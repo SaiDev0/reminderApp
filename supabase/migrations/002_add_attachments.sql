@@ -52,23 +52,23 @@ VALUES ('bill-attachments', 'bill-attachments', false);
 
 -- Storage policies
 CREATE POLICY "Users can upload their own bill attachments"
-ON storage.objects FOR INSERT
-WITH CHECK (
+    ON storage.objects FOR INSERT
+    WITH CHECK (
     bucket_id = 'bill-attachments' AND
     auth.uid()::text = (storage.foldername(name))[1]
-);
+    );
 
 CREATE POLICY "Users can view their own bill attachments"
-ON storage.objects FOR SELECT
-USING (
+    ON storage.objects FOR SELECT
+    USING (
     bucket_id = 'bill-attachments' AND
     auth.uid()::text = (storage.foldername(name))[1]
-);
+    );
 
 CREATE POLICY "Users can delete their own bill attachments"
-ON storage.objects FOR DELETE
-USING (
+    ON storage.objects FOR DELETE
+    USING (
     bucket_id = 'bill-attachments' AND
     auth.uid()::text = (storage.foldername(name))[1]
-);
+    );
 */

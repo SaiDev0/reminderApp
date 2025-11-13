@@ -27,6 +27,7 @@ import {
     formatFileSize,
     getFileIcon,
 } from '../../lib/attachments';
+import { exportBillToCalendar, createRecurringBillEvent } from '../../lib/calendar';
 import { Colors } from '../../constants/Colors';
 
 export default function BillDetailsScreen() {
@@ -255,11 +256,20 @@ export default function BillDetailsScreen() {
             case 'weekly':
                 date.setDate(date.getDate() + 7);
                 break;
+            case 'bi-weekly':
+                date.setDate(date.getDate() + 14);
+                break;
             case 'monthly':
                 date.setMonth(date.getMonth() + 1);
                 break;
+            case 'bi-monthly':
+                date.setMonth(date.getMonth() + 2);
+                break;
             case 'quarterly':
                 date.setMonth(date.getMonth() + 3);
+                break;
+            case 'semi-annually':
+                date.setMonth(date.getMonth() + 6);
                 break;
             case 'yearly':
                 date.setFullYear(date.getFullYear() + 1);
@@ -267,6 +277,39 @@ export default function BillDetailsScreen() {
         }
 
         return date.toISOString().split('T')[0];
+    };
+
+    const handleExportToCalendar = async () => {
+        if (!bill) return;
+
+        Alert.alert(
+            'Export to Calendar',
+            bill.frequency !== 'once'
+                ? 'Would you like to create a recurring calendar event for this bill?'
+                : 'Export this bill to your device calendar?',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Export',
+                    onPress: async () => {
+                        try {
+                            const success = bill.frequency !== 'once'
+                                ? await createRecurringBillEvent(bill)
+                                : await exportBillToCalendar(bill);
+
+                            if (success) {
+                                Alert.alert(
+                                    'Success!',
+                                    `"${bill.name}" has been added to your calendar.`
+                                );
+                            }
+                        } catch (error) {
+                            console.error('Error exporting to calendar:', error);
+                        }
+                    },
+                },
+            ]
+        );
     };
 
     const handleDelete = () => {
@@ -495,6 +538,11 @@ export default function BillDetailsScreen() {
                     </TouchableOpacity>
                 )}
 
+                <TouchableOpacity style={styles.calendarButton} onPress={handleExportToCalendar}>
+                    <Ionicons name="calendar" size={24} color="#007AFF" />
+                    <Text style={styles.calendarButtonText}>Export to Calendar</Text>
+                </TouchableOpacity>
+
                 <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
                     <Ionicons name="trash" size={24} color="#F44336" />
                     <Text style={styles.deleteButtonText}>Delete Bill</Text>
@@ -640,6 +688,23 @@ const styles = StyleSheet.create({
     primaryButtonText: {
         marginLeft: 8,
         color: '#fff',
+        fontSize: 18,
+        fontWeight: '600',
+    },
+    calendarButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#fff',
+        borderWidth: 2,
+        borderColor: '#007AFF',
+        padding: 16,
+        borderRadius: 8,
+        marginBottom: 12,
+    },
+    calendarButtonText: {
+        marginLeft: 8,
+        color: '#007AFF',
         fontSize: 18,
         fontWeight: '600',
     },

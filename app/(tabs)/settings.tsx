@@ -14,16 +14,44 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../../lib/supabase';
 import { UserSettings } from '../../lib/types';
+import {
+    isBiometricSupported,
+    isBiometricEnabled,
+    setBiometricEnabled,
+    isAppLockEnabled,
+    setAppLockEnabled,
+    authenticateWithBiometrics,
+    setupBiometricAuth,
+    getBiometricName,
+} from '../../lib/biometric';
 
 export default function SettingsScreen() {
     const [loading, setLoading] = useState(true);
     const [settings, setSettings] = useState<UserSettings | null>(null);
     const [pushToken, setPushToken] = useState<string | null>(null);
+    const [biometricSupported, setBiometricSupported] = useState(false);
+    const [biometricEnabled, setBiometricEnabledState] = useState(false);
+    const [appLockEnabled, setAppLockEnabledState] = useState(false);
+    const [biometricTypes, setBiometricTypes] = useState<string[]>([]);
 
     useEffect(() => {
         loadSettings();
         registerForPushNotifications();
+        checkBiometricSupport();
     }, []);
+
+    const checkBiometricSupport = async () => {
+        const setup = await setupBiometricAuth();
+        setBiometricSupported(setup.supported && setup.enrolled);
+        setBiometricTypes(setup.types);
+
+        if (setup.supported && setup.enrolled) {
+            const enabled = await isBiometricEnabled();
+            const lockEnabled = await isAppLockEnabled();
+            setBiometricEnabledState(enabled);
+            setAppLockEnabledState(lockEnabled);
+        }
+    };
 
     const loadSettings = async () => {
         try {
@@ -133,6 +161,61 @@ export default function SettingsScreen() {
         }
     };
 
+    const handleBiometricToggle = async (value: boolean) => {
+        if (value) {
+            // Test biometric authentication before enabling
+            const result = await authenticateWithBiometrics(
+                'Authenticate to enable biometric security'
+            );
+
+            if (result.success) {
+                await setBiometricEnabled(true);
+                setBiometricEnabledState(true);
+                Alert.alert('Success', `${getBiometricName()} enabled successfully!`);
+            } else {
+                Alert.alert('Authentication Failed', result.error || 'Could not authenticate');
+            }
+        } else {
+            await setBiometricEnabled(false);
+            setBiometricEnabledState(false);
+            // Also disable app lock when disabling biometrics
+            await setAppLockEnabled(false);
+            setAppLockEnabledState(false);
+        }
+    };
+
+    const handleAppLockToggle = async (value: boolean) => {
+        if (value) {
+            // Require biometric to be enabled first
+            if (!biometricEnabled) {
+                Alert.alert(
+                    'Enable Biometric First',
+                    `Please enable ${getBiometricName()} before enabling app lock.`
+                );
+                return;
+            }
+
+            // Test biometric authentication before enabling app lock
+            const result = await authenticateWithBiometrics(
+                'Authenticate to enable app lock'
+            );
+
+            if (result.success) {
+                await setAppLockEnabled(true);
+                setAppLockEnabledState(true);
+                Alert.alert(
+                    'App Lock Enabled',
+                    'The app will now require authentication when you open it.'
+                );
+            } else {
+                Alert.alert('Authentication Failed', result.error || 'Could not authenticate');
+            }
+        } else {
+            await setAppLockEnabled(false);
+            setAppLockEnabledState(false);
+        }
+    };
+
     const handleLogout = async () => {
         Alert.alert(
             'Logout',
@@ -210,8 +293,78 @@ export default function SettingsScreen() {
                 )}
             </View>
 
+            {/* Security Section */}
+            <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Security</Text>
+
+                {biometricSupported ? (
+                    <>
+                        <View style={styles.settingRow}>
+                            <View style={styles.settingInfo}>
+                                <Ionicons name="finger-print" size={24} color="#007AFF" />
+                                <View style={styles.settingText}>
+                                    <Text style={styles.settingLabel}>{getBiometricName()}</Text>
+                                    <Text style={styles.settingDescription}>
+                                        Secure your app with {biometricTypes.join(' or ')}
+                                    </Text>
+                                </View>
+                            </View>
+                            <Switch
+                                value={biometricEnabled}
+                                onValueChange={handleBiometricToggle}
+                                trackColor={{ false: '#767577', true: '#81b0ff' }}
+                                thumbColor={biometricEnabled ? '#007AFF' : '#f4f3f4'}
+                            />
+                        </View>
+
+                        {biometricEnabled && (
+                            <View style={styles.settingRow}>
+                                <View style={styles.settingInfo}>
+                                    <Ionicons name="lock-closed" size={24} color="#007AFF" />
+                                    <View style={styles.settingText}>
+                                        <Text style={styles.settingLabel}>App Lock</Text>
+                                        <Text style={styles.settingDescription}>
+                                            Require authentication when opening app
+                                        </Text>
+                                    </View>
+                                </View>
+                                <Switch
+                                    value={appLockEnabled}
+                                    onValueChange={handleAppLockToggle}
+                                    trackColor={{ false: '#767577', true: '#81b0ff' }}
+                                    thumbColor={appLockEnabled ? '#007AFF' : '#f4f3f4'}
+                                />
+                            </View>
+                        )}
+                    </>
+                ) : (
+                    <View style={styles.infoBox}>
+                        <Ionicons name="information-circle" size={20} color="#999" />
+                        <Text style={styles.infoText}>
+                            Biometric authentication is not available on this device. Please set up Face ID, Touch ID, or Fingerprint in device settings.
+                        </Text>
+                    </View>
+                )}
+            </View>
+
             <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Preferences</Text>
+
+                <TouchableOpacity
+                    style={styles.settingRow}
+                    onPress={() => router.push('/budget')}
+                >
+                    <View style={styles.settingInfo}>
+                        <Ionicons name="wallet" size={24} color="#007AFF" />
+                        <View style={styles.settingText}>
+                            <Text style={styles.settingLabel}>Budget Tracking</Text>
+                            <Text style={styles.settingDescription}>
+                                Manage monthly spending limits
+                            </Text>
+                        </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#999" />
+                </TouchableOpacity>
 
                 <TouchableOpacity style={styles.settingRow}>
                     <View style={styles.settingInfo}>

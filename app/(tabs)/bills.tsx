@@ -15,7 +15,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { Bill, BillCategory } from '../../lib/types';
@@ -30,9 +30,12 @@ export default function BillsScreen() {
     const [searchQuery, setSearchQuery] = useState('');
     const [filterCategory, setFilterCategory] = useState<BillCategory | 'all'>('all');
 
-    useEffect(() => {
-        fetchBills();
-    }, []);
+    // Refresh data when screen comes into focus
+    useFocusEffect(
+        useCallback(() => {
+            fetchBills();
+        }, [])
+    );
 
     useEffect(() => {
         applyFilters();
@@ -157,11 +160,20 @@ export default function BillsScreen() {
             case 'weekly':
                 date.setDate(date.getDate() + 7);
                 break;
+            case 'bi-weekly':
+                date.setDate(date.getDate() + 14);
+                break;
             case 'monthly':
                 date.setMonth(date.getMonth() + 1);
                 break;
+            case 'bi-monthly':
+                date.setMonth(date.getMonth() + 2);
+                break;
             case 'quarterly':
                 date.setMonth(date.getMonth() + 3);
+                break;
+            case 'semi-annually':
+                date.setMonth(date.getMonth() + 6);
                 break;
             case 'yearly':
                 date.setFullYear(date.getFullYear() + 1);

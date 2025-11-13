@@ -15,7 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { Bill } from '../../lib/types';
@@ -33,6 +33,15 @@ export default function DashboardScreen() {
     useEffect(() => {
         checkUser();
     }, []);
+
+    // Refresh data when screen comes into focus
+    useFocusEffect(
+        useCallback(() => {
+            if (user) {
+                fetchUpcomingBills();
+            }
+        }, [user])
+    );
 
     const checkUser = async () => {
         const { data: { session } } = await supabase.auth.getSession();
@@ -158,11 +167,20 @@ export default function DashboardScreen() {
             case 'weekly':
                 date.setDate(date.getDate() + 7);
                 break;
+            case 'bi-weekly':
+                date.setDate(date.getDate() + 14);
+                break;
             case 'monthly':
                 date.setMonth(date.getMonth() + 1);
                 break;
+            case 'bi-monthly':
+                date.setMonth(date.getMonth() + 2);
+                break;
             case 'quarterly':
                 date.setMonth(date.getMonth() + 3);
+                break;
+            case 'semi-annually':
+                date.setMonth(date.getMonth() + 6);
                 break;
             case 'yearly':
                 date.setFullYear(date.getFullYear() + 1);

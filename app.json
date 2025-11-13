@@ -26,6 +26,9 @@
         ],
         "NSCameraUsageDescription": "Allow Bill Reminder to take photos of bills",
         "NSPhotoLibraryUsageDescription": "Allow Bill Reminder to access your photo library to attach bill documents",
+        "NSFaceIDUsageDescription": "Allow Bill Reminder to use Face ID for secure authentication",
+        "NSCalendarsUsageDescription": "Allow Bill Reminder to add bills to your calendar for better organization",
+        "NSRemindersUsageDescription": "Allow Bill Reminder to create reminders for your bills",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -40,7 +43,9 @@
         "SCHEDULE_EXACT_ALARM",
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR"
       ]
     },
     "web": {
