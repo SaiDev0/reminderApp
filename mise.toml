@@ -1,0 +1,3 @@
+[tools]
+cocoapods = "1.16.2"
+ruby="3.3.7"

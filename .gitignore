@@ -1,24 +1,55 @@
-# Expo
+node_modules/
 .expo/
+.expo-shared/
 dist/
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
 web-build/
 
-# Node
-node_modules/
-npm-debug.log
-yarn-error.log
+# macOS
+.DS_Store
 
 # Environment
 .env
 .env.local
 
-# macOS
-.DS_Store
+# Native folders (generated)
+ios/
+android/
 
-# IDE
-.vscode/
-.idea/
+# Xcode
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata
+*.xccheckout
+*.moved-aside
+DerivedData
+*.hmap
+*.ipa
+*.xcuserstate
+project.xcworkspace
 
-# TypeScript
-*.tsbuildinfo
+# Android/IntelliJ
+build/
+.idea
+.gradle
+local.properties
+*.iml
+*.hprof
+.cxx/
 
+# Temporary files
+*.log
+*.tmp
+*.temp

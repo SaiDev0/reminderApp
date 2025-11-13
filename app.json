@@ -21,10 +21,12 @@
       "bundleIdentifier": "com.personal.billreminder",
       "infoPlist": {
         "UIBackgroundModes": [
+          "remote-notification",
           "remote-notification"
         ],
         "NSCameraUsageDescription": "Allow Bill Reminder to take photos of bills",
-        "NSPhotoLibraryUsageDescription": "Allow Bill Reminder to access your photo library to attach bill documents"
+        "NSPhotoLibraryUsageDescription": "Allow Bill Reminder to access your photo library to attach bill documents",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -46,16 +48,7 @@
       "bundler": "metro"
     },
     "plugins": [
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/notification-icon.png",
-          "color": "#ffffff",
-          "sounds": [
-            "./assets/notification-sound.wav"
-          ]
-        }
-      ]
+      "expo-notifications"
     ],
     "extra": {
       "router": {
