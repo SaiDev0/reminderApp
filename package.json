@@ -16,6 +16,7 @@
     "build:ios:local": "eas build --platform ios --profile development --local",
     "build:preview:android": "eas build --platform android --profile preview",
     "build:preview:ios": "eas build --platform ios --profile preview",
+    "build:web": "npx expo export --platform web",
     "run:android": "expo run:android",
     "run:ios": "expo run:ios"
   },
