@@ -85,3 +85,53 @@ export interface BudgetSummary {
     bills_count: number;
 }
 
+export type AchievementType =
+    | 'first_bill'
+    | 'streak_7'
+    | 'streak_30'
+    | 'streak_100'
+    | 'bills_10'
+    | 'bills_50'
+    | 'bills_100'
+    | 'saved_100'
+    | 'saved_500'
+    | 'saved_1000'
+    | 'category_master'
+    | 'early_bird'
+    | 'perfect_month'
+    | 'budget_keeper';
+
+export interface Achievement {
+    id: string;
+    user_id: string;
+    type: AchievementType;
+    title: string;
+    description: string;
+    icon: string;
+    unlocked_at: string;
+    created_at: string;
+}
+
+export interface UserStats {
+    id: string;
+    user_id: string;
+    current_streak: number;
+    longest_streak: number;
+    total_bills_paid: number;
+    total_amount_paid: number;
+    on_time_payments: number;
+    late_payments: number;
+    total_saved: number;
+    last_payment_date: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface AchievementDefinition {
+    type: AchievementType;
+    title: string;
+    description: string;
+    icon: string;
+    condition: (stats: UserStats) => boolean;
+}
+

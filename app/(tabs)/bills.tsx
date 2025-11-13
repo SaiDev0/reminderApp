@@ -9,8 +9,9 @@ import {
     ActivityIndicator,
     Alert,
     TextInput,
-    ScrollView,
     Animated,
+    Dimensions,
+    Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
@@ -19,8 +20,23 @@ import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { Bill, BillCategory } from '../../lib/types';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, isPast, isToday, differenceInDays } from 'date-fns';
 import { Colors } from '../../constants/Colors';
+import { checkAndUnlockAchievements } from '../../lib/gamification';
+
+const { width } = Dimensions.get('window');
+const CARD_MARGIN = 16;
+
+const categories: Array<{ id: BillCategory | 'all'; label: string; icon: string }> = [
+    { id: 'all', label: 'All', icon: 'apps' },
+    { id: 'utilities', label: 'Utilities', icon: 'flash' },
+    { id: 'subscriptions', label: 'Subscriptions', icon: 'tv' },
+    { id: 'insurance', label: 'Insurance', icon: 'shield' },
+    { id: 'rent', label: 'Rent', icon: 'home' },
+    { id: 'loans', label: 'Loans', icon: 'card' },
+    { id: 'credit_card', label: 'Credit Card', icon: 'card-outline' },
+    { id: 'other', label: 'Other', icon: 'ellipsis-horizontal' },
+];
 
 export default function BillsScreen() {
     const [bills, setBills] = useState<Bill[]>([]);
@@ -29,8 +45,8 @@ export default function BillsScreen() {
     const [refreshing, setRefreshing] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [filterCategory, setFilterCategory] = useState<BillCategory | 'all'>('all');
+    const scrollY = new Animated.Value(0);
 
-    // Refresh data when screen comes into focus
     useFocusEffect(
         useCallback(() => {
             fetchBills();
@@ -63,12 +79,10 @@ export default function BillsScreen() {
     const applyFilters = () => {
         let filtered = [...bills];
 
-        // Apply category filter
         if (filterCategory !== 'all') {
             filtered = filtered.filter(bill => bill.category === filterCategory);
         }
 
-        // Apply search filter
         if (searchQuery) {
             filtered = filtered.filter(bill =>
                 bill.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -83,37 +97,8 @@ export default function BillsScreen() {
         fetchBills();
     }, []);
 
-    const deleteBill = async (billId: string) => {
-        try {
-            const { error } = await supabase
-                .from('bills')
-                .delete()
-                .eq('id', billId);
-
-            if (error) throw error;
-
-            setBills(bills.filter(b => b.id !== billId));
-            Alert.alert('Success', 'Bill deleted successfully');
-        } catch (error) {
-            console.error('Error deleting bill:', error);
-            Alert.alert('Error', 'Failed to delete bill');
-        }
-    };
-
-    const confirmDelete = (bill: Bill) => {
-        Alert.alert(
-            'Delete Bill',
-            `Are you sure you want to delete "${bill.name}"?`,
-            [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete', style: 'destructive', onPress: () => deleteBill(bill.id) },
-            ]
-        );
-    };
-
     const handleMarkAsPaid = async (bill: Bill) => {
         try {
-            // Add to payment history
             const { error: historyError } = await supabase
                 .from('payment_history')
                 .insert({
@@ -124,7 +109,6 @@ export default function BillsScreen() {
 
             if (historyError) throw historyError;
 
-            // Update bill status
             const { error: billError } = await supabase
                 .from('bills')
                 .update({ status: 'paid' })
@@ -132,7 +116,6 @@ export default function BillsScreen() {
 
             if (billError) throw billError;
 
-            // If recurring, update to next due date
             if (bill.frequency !== 'once') {
                 const nextDueDate = calculateNextDueDate(bill.due_date, bill.frequency);
                 await supabase
@@ -144,8 +127,12 @@ export default function BillsScreen() {
                     .eq('id', bill.id);
             }
 
-            // Refresh the list
             fetchBills();
+
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                await checkAndUnlockAchievements(user.id);
+            }
 
             Alert.alert('✅ Paid!', `${bill.name} marked as paid`);
         } catch (error) {
@@ -182,24 +169,78 @@ export default function BillsScreen() {
         return date.toISOString().split('T')[0];
     };
 
+    const deleteBill = async (billId: string) => {
+        try {
+            const { error } = await supabase
+                .from('bills')
+                .delete()
+                .eq('id', billId);
+
+            if (error) throw error;
+
+            setBills(bills.filter(b => b.id !== billId));
+            Alert.alert('✅ Deleted', 'Bill removed successfully');
+        } catch (error) {
+            console.error('Error deleting bill:', error);
+            Alert.alert('Error', 'Failed to delete bill');
+        }
+    };
+
+    const confirmDelete = (bill: Bill) => {
+        Alert.alert(
+            'Delete Bill',
+            `Are you sure you want to delete "${bill.name}"?`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete', style: 'destructive', onPress: () => deleteBill(bill.id) },
+            ]
+        );
+    };
+
+    const getStatusInfo = (bill: Bill) => {
+        const dueDate = parseISO(bill.due_date);
+        const daysUntil = differenceInDays(dueDate, new Date());
+
+        if (bill.status === 'paid') {
+            return { color: Colors.status.paid.color, bg: Colors.status.paid.bg, text: 'Paid', icon: 'checkmark-circle' };
+        }
+        if (isPast(dueDate) && bill.status !== 'paid') {
+            return { color: Colors.status.overdue.color, bg: Colors.status.overdue.bg, text: 'Overdue', icon: 'alert-circle' };
+        }
+        if (isToday(dueDate)) {
+            return { color: Colors.status.due_today.color, bg: Colors.status.due_today.bg, text: 'Due Today', icon: 'time' };
+        }
+        if (daysUntil <= 7 && daysUntil > 0) {
+            return { color: Colors.status.due_soon.color, bg: Colors.status.due_soon.bg, text: `${daysUntil}d`, icon: 'calendar' };
+        }
+        return { color: Colors.status.pending.color, bg: Colors.status.pending.bg, text: `${daysUntil}d`, icon: 'calendar-outline' };
+    };
+
+    const getCategoryInfo = (category: string) => {
+        return (Colors.category as any)[category] || Colors.category.other;
+    };
+
     const renderRightActions = (bill: Bill, progress: Animated.AnimatedInterpolation<number>) => {
+        if (bill.status === 'paid') return null;
+
         const translateX = progress.interpolate({
             inputRange: [0, 1],
-            outputRange: [100, 0],
+            outputRange: [80, 0],
         });
 
         return (
-            <Animated.View style={[styles.swipeActions, { transform: [{ translateX }] }]}>
+            <Animated.View style={[styles.swipeAction, { transform: [{ translateX }] }]}>
                 <TouchableOpacity
-                    style={styles.markPaidButton}
+                    style={styles.swipeButton}
                     onPress={() => handleMarkAsPaid(bill)}
+                    activeOpacity={0.8}
                 >
                     <LinearGradient
                         colors={Colors.gradient.success}
-                        style={styles.swipeActionGradient}
+                        style={styles.swipeGradient}
                     >
                         <Ionicons name="checkmark-circle" size={24} color="white" />
-                        <Text style={styles.swipeActionText}>Paid</Text>
+                        <Text style={styles.swipeText}>Paid</Text>
                     </LinearGradient>
                 </TouchableOpacity>
             </Animated.View>
@@ -209,163 +250,240 @@ export default function BillsScreen() {
     const renderLeftActions = (bill: Bill, progress: Animated.AnimatedInterpolation<number>) => {
         const translateX = progress.interpolate({
             inputRange: [0, 1],
-            outputRange: [-100, 0],
+            outputRange: [-80, 0],
         });
 
         return (
-            <Animated.View style={[styles.swipeActions, { transform: [{ translateX }] }]}>
+            <Animated.View style={[styles.swipeAction, { transform: [{ translateX }] }]}>
                 <TouchableOpacity
-                    style={styles.deleteButton}
+                    style={styles.swipeButton}
                     onPress={() => confirmDelete(bill)}
+                    activeOpacity={0.8}
                 >
                     <LinearGradient
                         colors={Colors.gradient.danger}
-                        style={styles.swipeActionGradient}
+                        style={styles.swipeGradient}
                     >
                         <Ionicons name="trash-outline" size={24} color="white" />
-                        <Text style={styles.swipeActionText}>Delete</Text>
+                        <Text style={styles.swipeText}>Delete</Text>
                     </LinearGradient>
                 </TouchableOpacity>
             </Animated.View>
         );
     };
 
-    const renderBillItem = ({ item }: { item: Bill }) => (
-        <Swipeable
-            renderRightActions={(progress) => renderRightActions(item, progress)}
-            renderLeftActions={(progress) => renderLeftActions(item, progress)}
-            overshootRight={false}
-            overshootLeft={false}
-        >
-            <TouchableOpacity
-                style={styles.billCard}
-                onPress={() => router.push(`/bill/${item.id}`)}
-                onLongPress={() => confirmDelete(item)}
+    const renderBillCard = ({ item, index }: { item: Bill; index: number }) => {
+        const statusInfo = getStatusInfo(item);
+        const categoryInfo = getCategoryInfo(item.category);
+        const categoryData = categories.find(c => c.id === item.category);
+
+        return (
+            <Swipeable
+                renderRightActions={(progress) => renderRightActions(item, progress)}
+                renderLeftActions={(progress) => renderLeftActions(item, progress)}
+                overshootRight={false}
+                overshootLeft={false}
             >
-                <View style={styles.billHeader}>
-                    <View style={styles.billInfo}>
-                        <Text style={styles.billName}>{item.name}</Text>
-                        <Text style={styles.billCategory}>{item.category}</Text>
-                    </View>
-                    <Text style={styles.billAmount}>${item.amount}</Text>
-                </View>
+                <TouchableOpacity
+                    style={styles.billCard}
+                    onPress={() => router.push(`/bill/${item.id}`)}
+                    activeOpacity={0.9}
+                >
+                    <LinearGradient
+                        colors={categoryInfo.gradient}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={styles.categoryBar}
+                    />
 
-                <View style={styles.billFooter}>
-                    <View style={styles.dueDateContainer}>
-                        <Ionicons name="calendar" size={16} color="#666" />
-                        <Text style={styles.dueDate}>
-                            {format(parseISO(item.due_date), 'MMM dd, yyyy')}
-                        </Text>
-                    </View>
-                    <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
-                        <Text style={styles.statusText}>{item.status}</Text>
-                    </View>
-                </View>
+                    <View style={styles.billCardContent}>
+                        <View style={styles.billLeft}>
+                            <View style={[styles.categoryIcon, { backgroundColor: categoryInfo.light }]}>
+                                <Ionicons name={categoryData?.icon as any} size={24} color={categoryInfo.color} />
+                            </View>
 
-                {item.frequency !== 'once' && (
-                    <View style={styles.frequencyBadge}>
-                        <Ionicons name="repeat" size={14} color="#007AFF" />
-                        <Text style={styles.frequencyText}>{item.frequency}</Text>
-                    </View>
-                )}
-            </TouchableOpacity>
-        </Swipeable>
-    );
+                            <View style={styles.billInfo}>
+                                <Text style={styles.billName} numberOfLines={1}>{item.name}</Text>
+                                <View style={styles.billMeta}>
+                                    <View style={[styles.statusBadge, { backgroundColor: statusInfo.bg }]}>
+                                        <Ionicons name={statusInfo.icon as any} size={12} color={statusInfo.color} />
+                                        <Text style={[styles.statusText, { color: statusInfo.color }]}>
+                                            {statusInfo.text}
+                                        </Text>
+                                    </View>
+                                    <View style={styles.frequencyBadge}>
+                                        <Ionicons name="repeat" size={10} color={Colors.text.secondary} />
+                                        <Text style={styles.frequencyText}>
+                                            {item.frequency === 'once' ? 'One-time' : item.frequency}
+                                        </Text>
+                                    </View>
+                                </View>
+                            </View>
+                        </View>
 
-    const getStatusColor = (status: string) => {
-        switch (status) {
-            case 'paid': return '#4CAF50';
-            case 'overdue': return '#F44336';
-            default: return '#007AFF';
-        }
+                        <View style={styles.billRight}>
+                            <Text style={styles.billAmount}>${parseFloat(item.amount.toString()).toFixed(2)}</Text>
+                            <Text style={styles.billDate}>{format(parseISO(item.due_date), 'MMM d, yyyy')}</Text>
+                        </View>
+                    </View>
+                </TouchableOpacity>
+            </Swipeable>
+        );
     };
 
-    const categories: Array<BillCategory | 'all'> = [
-        'all', 'utilities', 'subscriptions', 'insurance', 'rent', 'loans', 'credit_card', 'other'
-    ];
+    const renderHeader = () => (
+        <View style={styles.headerContainer}>
+            {/* Search Bar */}
+            <View style={styles.searchContainer}>
+                <Ionicons name="search" size={20} color={Colors.text.secondary} style={styles.searchIcon} />
+                <TextInput
+                    style={styles.searchInput}
+                    placeholder="Search bills..."
+                    placeholderTextColor={Colors.text.secondary}
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                />
+                {searchQuery !== '' && (
+                    <TouchableOpacity onPress={() => setSearchQuery('')} activeOpacity={0.7}>
+                        <Ionicons name="close-circle" size={20} color={Colors.text.secondary} />
+                    </TouchableOpacity>
+                )}
+            </View>
+
+            {/* Category Pills */}
+            <FlatList
+                data={categories}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={styles.categoriesContent}
+                renderItem={({ item }) => {
+                    const isActive = filterCategory === item.id;
+                    const categoryInfo = item.id !== 'all' ? getCategoryInfo(item.id) : null;
+
+                    return (
+                        <TouchableOpacity
+                            style={[
+                                styles.categoryPill,
+                                isActive && styles.categoryPillActive,
+                            ]}
+                            onPress={() => setFilterCategory(item.id)}
+                            activeOpacity={0.8}
+                        >
+                            {isActive && categoryInfo && (
+                                <LinearGradient
+                                    colors={categoryInfo.gradient}
+                                    style={StyleSheet.absoluteFill}
+                                />
+                            )}
+                            {isActive && item.id === 'all' && (
+                                <LinearGradient
+                                    colors={Colors.gradient.primary}
+                                    style={StyleSheet.absoluteFill}
+                                />
+                            )}
+                            <Ionicons
+                                name={item.icon as any}
+                                size={16}
+                                color={isActive ? 'white' : Colors.text.secondary}
+                                style={styles.categoryPillIcon}
+                            />
+                            <Text style={[
+                                styles.categoryPillText,
+                                isActive && styles.categoryPillTextActive
+                            ]}>
+                                {item.label}
+                            </Text>
+                        </TouchableOpacity>
+                    );
+                }}
+            />
+
+            {/* Results Summary */}
+            <View style={styles.resultsSummary}>
+                <Text style={styles.resultsText}>
+                    {filteredBills.length} {filteredBills.length === 1 ? 'bill' : 'bills'}
+                    {filterCategory !== 'all' && ` in ${categories.find(c => c.id === filterCategory)?.label}`}
+                    {searchQuery && ` matching "${searchQuery}"`}
+                </Text>
+            </View>
+        </View>
+    );
 
     if (loading) {
         return (
-            <View style={styles.centered}>
-                <ActivityIndicator size="large" color="#007AFF" />
+            <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={Colors.primary} />
             </View>
         );
     }
 
     return (
         <GestureHandlerRootView style={styles.container}>
-            <View style={styles.searchContainer}>
-                <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
-                <TextInput
-                    style={styles.searchInput}
-                    placeholder="Search bills..."
-                    value={searchQuery}
-                    onChangeText={setSearchQuery}
-                />
+            <View style={styles.topBar}>
+                <Text style={styles.title}>All Bills</Text>
+                <TouchableOpacity
+                    style={styles.addButton}
+                    onPress={() => router.push('/bill/add')}
+                    activeOpacity={0.8}
+                >
+                    <Ionicons name="add-circle" size={28} color={Colors.primary} />
+                </TouchableOpacity>
             </View>
-
-            <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.categoriesContainer}
-            >
-                {categories.map((item) => (
-                    <TouchableOpacity
-                        key={item}
-                        style={[
-                            styles.categoryChip,
-                            filterCategory === item && styles.categoryChipActive
-                        ]}
-                        onPress={() => setFilterCategory(item)}
-                        activeOpacity={0.7}
-                    >
-                        {filterCategory === item ? (
-                            <LinearGradient
-                                colors={Colors.gradient.primary}
-                                start={{ x: 0, y: 0 }}
-                                end={{ x: 1, y: 1 }}
-                                style={styles.categoryChipGradient}
-                            >
-                                <Text style={styles.categoryChipTextActive}>
-                                    {item === 'all' ? 'All' : item.replace('_', ' ')}
-                                </Text>
-                            </LinearGradient>
-                        ) : (
-                            <Text style={styles.categoryChipText}>
-                                {item === 'all' ? 'All' : item.replace('_', ' ')}
-                            </Text>
-                        )}
-                    </TouchableOpacity>
-                ))}
-            </ScrollView>
 
             <FlatList
                 data={filteredBills}
-                renderItem={renderBillItem}
+                renderItem={renderBillCard}
                 keyExtractor={(item) => item.id}
+                ListHeaderComponent={renderHeader}
                 ListEmptyComponent={
                     <View style={styles.emptyState}>
-                        <Ionicons name="document-text-outline" size={64} color="#ccc" />
-                        <Text style={styles.emptyText}>No bills found</Text>
-                        <Text style={styles.emptySubtext}>
-                            {searchQuery || filterCategory !== 'all'
-                                ? 'Try adjusting your filters'
-                                : 'Add your first bill to get started'}
+                        <LinearGradient
+                            colors={Colors.gradient.primary}
+                            style={styles.emptyIcon}
+                        >
+                            <Ionicons
+                                name={searchQuery || filterCategory !== 'all' ? "search" : "document-text"}
+                                size={48}
+                                color="white"
+                            />
+                        </LinearGradient>
+                        <Text style={styles.emptyTitle}>
+                            {searchQuery || filterCategory !== 'all' ? 'No bills found' : 'No bills yet'}
                         </Text>
+                        <Text style={styles.emptyText}>
+                            {searchQuery || filterCategory !== 'all'
+                                ? 'Try adjusting your filters or search query'
+                                : 'Add your first bill to get started'
+                            }
+                        </Text>
+                        {!searchQuery && filterCategory === 'all' && (
+                            <TouchableOpacity
+                                style={styles.emptyButton}
+                                onPress={() => router.push('/bill/add')}
+                                activeOpacity={0.8}
+                            >
+                                <LinearGradient
+                                    colors={Colors.gradient.primary}
+                                    style={styles.emptyButtonGradient}
+                                >
+                                    <Ionicons name="add-circle-outline" size={20} color="white" />
+                                    <Text style={styles.emptyButtonText}>Add Bill</Text>
+                                </LinearGradient>
+                            </TouchableOpacity>
+                        )}
                     </View>
                 }
                 refreshControl={
-                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        tintColor={Colors.primary}
+                    />
                 }
                 contentContainerStyle={styles.listContent}
+                showsVerticalScrollIndicator={false}
             />
-
-            <TouchableOpacity
-                style={styles.fab}
-                onPress={() => router.push('/bill/add')}
-            >
-                <Ionicons name="add" size={32} color="#fff" />
-            </TouchableOpacity>
         </GestureHandlerRootView>
     );
 }
@@ -373,213 +491,253 @@ export default function BillsScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: Colors.background,
     },
-    centered: {
+    loadingContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        backgroundColor: Colors.background,
     },
+    topBar: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: CARD_MARGIN,
+        paddingTop: Platform.OS === 'ios' ? 60 : 40,
+        paddingBottom: 16,
+        backgroundColor: Colors.background,
+    },
+    title: {
+        fontSize: 32,
+        fontWeight: '800',
+        color: Colors.text.primary,
+    },
+    addButton: {
+        padding: 4,
+    },
+    listContent: {
+        paddingBottom: 100,
+    },
+    headerContainer: {
+        paddingBottom: 16,
+    },
+    // Search
     searchContainer: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#fff',
-        margin: 16,
-        marginBottom: 8,
-        paddingHorizontal: 12,
-        borderRadius: 8,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+        backgroundColor: Colors.card,
+        marginHorizontal: CARD_MARGIN,
+        marginBottom: 16,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderRadius: 16,
+        ...Colors.shadow.sm,
     },
     searchIcon: {
         marginRight: 8,
     },
     searchInput: {
         flex: 1,
-        paddingVertical: 12,
         fontSize: 16,
+        color: Colors.text.primary,
     },
-    categoriesContainer: {
-        paddingHorizontal: 16,
-        paddingVertical: 8,
+    // Categories
+    categoriesContent: {
+        paddingHorizontal: CARD_MARGIN,
+        paddingBottom: 16,
         gap: 8,
     },
-    categoryChip: {
-        marginRight: 8,
-        borderRadius: 24,
-        overflow: 'hidden',
-        height: 40,
-        justifyContent: 'center',
-    },
-    categoryChipGradient: {
-        paddingHorizontal: 20,
-        paddingVertical: 10,
-        height: 40,
-        justifyContent: 'center',
+    categoryPill: {
+        flexDirection: 'row',
         alignItems: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 20,
+        backgroundColor: Colors.card,
+        marginRight: 8,
+        overflow: 'hidden',
+        ...Colors.shadow.xs,
     },
-    categoryChipActive: {
-        // Handled by gradient
+    categoryPillActive: {
+        ...Colors.shadow.sm,
     },
-    categoryChipText: {
+    categoryPillIcon: {
+        marginRight: 6,
+    },
+    categoryPillText: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: Colors.text.secondary,
+    },
+    categoryPillTextActive: {
+        color: 'white',
+    },
+    // Results
+    resultsSummary: {
+        paddingHorizontal: CARD_MARGIN,
+        paddingBottom: 12,
+    },
+    resultsText: {
         fontSize: 14,
         color: Colors.text.secondary,
-        textTransform: 'capitalize',
-        fontWeight: '600',
-        paddingHorizontal: 20,
-        paddingVertical: 10,
+        fontWeight: '500',
+    },
+    // Bill Cards
+    billCard: {
+        marginHorizontal: CARD_MARGIN,
+        marginBottom: 12,
         backgroundColor: Colors.card,
-        borderRadius: 24,
+        borderRadius: 16,
         overflow: 'hidden',
         ...Colors.shadow.sm,
     },
-    categoryChipTextActive: {
-        color: 'white',
-        fontSize: 14,
-        fontWeight: '600',
-        textTransform: 'capitalize',
+    categoryBar: {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: 4,
     },
-    listContent: {
-        padding: 16,
-        paddingBottom: 80,
-    },
-    billCard: {
-        backgroundColor: '#fff',
-        borderRadius: 12,
-        padding: 16,
-        marginBottom: 12,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
-    },
-    billHeader: {
+    billCardContent: {
         flexDirection: 'row',
+        alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: 12,
+        padding: 16,
+        paddingLeft: 20,
+    },
+    billLeft: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginRight: 12,
+    },
+    categoryIcon: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 12,
     },
     billInfo: {
         flex: 1,
     },
     billName: {
-        fontSize: 18,
+        fontSize: 16,
         fontWeight: '600',
-        color: '#333',
-        marginBottom: 4,
+        color: Colors.text.primary,
+        marginBottom: 6,
     },
-    billCategory: {
-        fontSize: 14,
-        color: '#666',
-        textTransform: 'capitalize',
-    },
-    billAmount: {
-        fontSize: 20,
-        fontWeight: 'bold',
-        color: '#333',
-    },
-    billFooter: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-    },
-    dueDateContainer: {
+    billMeta: {
         flexDirection: 'row',
         alignItems: 'center',
-    },
-    dueDate: {
-        marginLeft: 4,
-        fontSize: 14,
-        color: '#666',
+        gap: 8,
     },
     statusBadge: {
-        paddingHorizontal: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 8,
         paddingVertical: 4,
-        borderRadius: 12,
+        borderRadius: 8,
+        gap: 4,
     },
     statusText: {
-        color: '#fff',
-        fontSize: 12,
+        fontSize: 11,
         fontWeight: '600',
-        textTransform: 'capitalize',
     },
     frequencyBadge: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginTop: 8,
-        paddingTop: 8,
-        borderTopWidth: 1,
-        borderTopColor: '#f0f0f0',
+        backgroundColor: Colors.background,
+        paddingHorizontal: 6,
+        paddingVertical: 3,
+        borderRadius: 6,
+        gap: 3,
     },
     frequencyText: {
-        marginLeft: 4,
-        fontSize: 12,
-        color: '#007AFF',
+        fontSize: 10,
+        fontWeight: '500',
+        color: Colors.text.secondary,
         textTransform: 'capitalize',
     },
+    billRight: {
+        alignItems: 'flex-end',
+    },
+    billAmount: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: Colors.text.primary,
+        marginBottom: 4,
+    },
+    billDate: {
+        fontSize: 12,
+        fontWeight: '500',
+        color: Colors.text.secondary,
+    },
+    // Swipe Actions
+    swipeAction: {
+        justifyContent: 'center',
+        marginBottom: 12,
+    },
+    swipeButton: {
+        width: 80,
+        height: '100%',
+        borderRadius: 16,
+        overflow: 'hidden',
+    },
+    swipeGradient: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 4,
+    },
+    swipeText: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: 'white',
+    },
+    // Empty State
     emptyState: {
         alignItems: 'center',
+        paddingTop: 60,
+        paddingHorizontal: 40,
+    },
+    emptyIcon: {
+        width: 96,
+        height: 96,
+        borderRadius: 48,
         justifyContent: 'center',
-        paddingVertical: 60,
+        alignItems: 'center',
+        marginBottom: 24,
+    },
+    emptyTitle: {
+        fontSize: 24,
+        fontWeight: '700',
+        color: Colors.text.primary,
+        marginBottom: 8,
     },
     emptyText: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#333',
-        marginTop: 16,
-    },
-    emptySubtext: {
-        fontSize: 14,
-        color: '#666',
-        marginTop: 8,
+        fontSize: 15,
+        color: Colors.text.secondary,
         textAlign: 'center',
+        lineHeight: 22,
+        marginBottom: 32,
     },
-    fab: {
-        position: 'absolute',
-        right: 20,
-        bottom: 20,
-        width: 60,
-        height: 60,
-        borderRadius: 30,
-        backgroundColor: '#007AFF',
-        alignItems: 'center',
-        justifyContent: 'center',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 4,
-        elevation: 8,
+    emptyButton: {
+        borderRadius: 16,
+        overflow: 'hidden',
     },
-    swipeActions: {
+    emptyButtonGradient: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginVertical: 6,
+        paddingVertical: 14,
+        paddingHorizontal: 28,
+        gap: 8,
     },
-    markPaidButton: {
-        marginRight: 16,
-        borderRadius: 12,
-        overflow: 'hidden',
-    },
-    deleteButton: {
-        marginLeft: 16,
-        borderRadius: 12,
-        overflow: 'hidden',
-    },
-    swipeActionGradient: {
-        width: 90,
-        height: '100%',
-        justifyContent: 'center',
-        alignItems: 'center',
-        paddingVertical: 12,
-    },
-    swipeActionText: {
+    emptyButtonText: {
+        fontSize: 16,
+        fontWeight: '600',
         color: 'white',
-        fontSize: 12,
-        fontWeight: '700',
-        marginTop: 4,
     },
 });
-

@@ -7,15 +7,16 @@ import {
     TouchableOpacity,
     Alert,
     ActivityIndicator,
-    Image,
     Linking,
+    Dimensions,
+    Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { Bill, PaymentHistory, BillAttachment } from '../../lib/types';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, differenceInDays, isPast, isToday } from 'date-fns';
 import {
     takePhoto,
     pickImage,
@@ -29,6 +30,9 @@ import {
 } from '../../lib/attachments';
 import { exportBillToCalendar, createRecurringBillEvent } from '../../lib/calendar';
 import { Colors } from '../../constants/Colors';
+
+const { width } = Dimensions.get('window');
+const CARD_MARGIN = 16;
 
 export default function BillDetailsScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
@@ -64,7 +68,6 @@ export default function BillDetailsScreen() {
             if (historyError) throw historyError;
             setHistory(historyData || []);
 
-            // Fetch attachments
             const attachmentsData = await getBillAttachments(id);
             setAttachments(attachmentsData);
         } catch (error) {
@@ -80,45 +83,27 @@ export default function BillDetailsScreen() {
             'Add Attachment',
             'Choose an option',
             [
-                {
-                    text: 'Take Photo',
-                    onPress: handleTakePhoto,
-                },
-                {
-                    text: 'Choose from Library',
-                    onPress: handlePickImage,
-                },
-                {
-                    text: 'Choose Document',
-                    onPress: handlePickDocument,
-                },
-                {
-                    text: 'Cancel',
-                    style: 'cancel',
-                },
+                { text: 'Take Photo', onPress: handleTakePhoto },
+                { text: 'Choose from Gallery', onPress: handlePickImage },
+                { text: 'Choose Document', onPress: handlePickDocument },
+                { text: 'Cancel', style: 'cancel' },
             ]
         );
     };
 
     const handleTakePhoto = async () => {
         const photo = await takePhoto();
-        if (photo) {
-            await uploadFile(photo);
-        }
+        if (photo) await uploadFile(photo);
     };
 
     const handlePickImage = async () => {
         const image = await pickImage();
-        if (image) {
-            await uploadFile(image);
-        }
+        if (image) await uploadFile(image);
     };
 
     const handlePickDocument = async () => {
         const doc = await pickDocument();
-        if (doc) {
-            await uploadFile(doc);
-        }
+        if (doc) await uploadFile(doc);
     };
 
     const uploadFile = async (file: any) => {
@@ -135,8 +120,7 @@ export default function BillDetailsScreen() {
             const result = await uploadAttachment(id, file, user.id);
 
             if (result.success) {
-                Alert.alert('Success', 'Attachment uploaded successfully');
-                // Refresh attachments
+                Alert.alert('✅ Success', 'Attachment uploaded!');
                 const updatedAttachments = await getBillAttachments(id);
                 setAttachments(updatedAttachments);
             } else {
@@ -177,7 +161,7 @@ export default function BillDetailsScreen() {
                         const success = await deleteAttachment(attachment.id, attachment.file_path);
                         if (success) {
                             setAttachments(attachments.filter(a => a.id !== attachment.id));
-                            Alert.alert('Success', 'Attachment deleted');
+                            Alert.alert('✅ Deleted', 'Attachment removed');
                         } else {
                             Alert.alert('Error', 'Failed to delete attachment');
                         }
@@ -192,14 +176,13 @@ export default function BillDetailsScreen() {
 
         Alert.alert(
             'Mark as Paid',
-            `Mark "${bill.name}" as paid?`,
+            `Confirm payment for "${bill.name}"?`,
             [
                 { text: 'Cancel', style: 'cancel' },
                 {
                     text: 'Mark Paid',
                     onPress: async () => {
                         try {
-                            // Add to payment history
                             const { error: historyError } = await supabase
                                 .from('payment_history')
                                 .insert({
@@ -210,7 +193,6 @@ export default function BillDetailsScreen() {
 
                             if (historyError) throw historyError;
 
-                            // Update bill status
                             const { error: billError } = await supabase
                                 .from('bills')
                                 .update({ status: 'paid' })
@@ -218,25 +200,18 @@ export default function BillDetailsScreen() {
 
                             if (billError) throw billError;
 
-                            // If recurring, create next bill
                             if (bill.frequency !== 'once') {
-                                const nextDueDate = calculateNextDueDate(
-                                    bill.due_date,
-                                    bill.frequency
-                                );
-
-                                const { error: nextBillError } = await supabase
+                                const nextDueDate = calculateNextDueDate(bill.due_date, bill.frequency);
+                                await supabase
                                     .from('bills')
                                     .update({
                                         due_date: nextDueDate,
                                         status: 'pending',
                                     })
                                     .eq('id', bill.id);
-
-                                if (nextBillError) throw nextBillError;
                             }
 
-                            Alert.alert('Success', 'Bill marked as paid', [
+                            Alert.alert('✅ Success', 'Bill marked as paid!', [
                                 { text: 'OK', onPress: () => router.back() },
                             ]);
                         } catch (error) {
@@ -251,71 +226,35 @@ export default function BillDetailsScreen() {
 
     const calculateNextDueDate = (currentDate: string, frequency: string): string => {
         const date = new Date(currentDate);
-
         switch (frequency) {
-            case 'weekly':
-                date.setDate(date.getDate() + 7);
-                break;
-            case 'bi-weekly':
-                date.setDate(date.getDate() + 14);
-                break;
-            case 'monthly':
-                date.setMonth(date.getMonth() + 1);
-                break;
-            case 'bi-monthly':
-                date.setMonth(date.getMonth() + 2);
-                break;
-            case 'quarterly':
-                date.setMonth(date.getMonth() + 3);
-                break;
-            case 'semi-annually':
-                date.setMonth(date.getMonth() + 6);
-                break;
-            case 'yearly':
-                date.setFullYear(date.getFullYear() + 1);
-                break;
+            case 'weekly': date.setDate(date.getDate() + 7); break;
+            case 'bi-weekly': date.setDate(date.getDate() + 14); break;
+            case 'monthly': date.setMonth(date.getMonth() + 1); break;
+            case 'bi-monthly': date.setMonth(date.getMonth() + 2); break;
+            case 'quarterly': date.setMonth(date.getMonth() + 3); break;
+            case 'semi-annually': date.setMonth(date.getMonth() + 6); break;
+            case 'yearly': date.setFullYear(date.getFullYear() + 1); break;
         }
-
         return date.toISOString().split('T')[0];
     };
 
     const handleExportToCalendar = async () => {
         if (!bill) return;
 
-        Alert.alert(
-            'Export to Calendar',
-            bill.frequency !== 'once'
-                ? 'Would you like to create a recurring calendar event for this bill?'
-                : 'Export this bill to your device calendar?',
-            [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Export',
-                    onPress: async () => {
-                        try {
-                            const success = bill.frequency !== 'once'
-                                ? await createRecurringBillEvent(bill)
-                                : await exportBillToCalendar(bill);
+        const isRecurring = bill.frequency !== 'once';
+        const result = isRecurring
+            ? await createRecurringBillEvent(bill)
+            : await exportBillToCalendar(bill);
 
-                            if (success) {
-                                Alert.alert(
-                                    'Success!',
-                                    `"${bill.name}" has been added to your calendar.`
-                                );
-                            }
-                        } catch (error) {
-                            console.error('Error exporting to calendar:', error);
-                        }
-                    },
-                },
-            ]
-        );
+        if (result) {
+            Alert.alert('✅ Exported', 'Bill added to calendar!');
+        }
     };
 
     const handleDelete = () => {
         Alert.alert(
             'Delete Bill',
-            `Are you sure you want to delete "${bill?.name}"? This action cannot be undone.`,
+            `Are you sure you want to delete "${bill?.name}"?`,
             [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -323,18 +262,11 @@ export default function BillDetailsScreen() {
                     style: 'destructive',
                     onPress: async () => {
                         try {
-                            const { error } = await supabase
-                                .from('bills')
-                                .delete()
-                                .eq('id', id);
-
-                            if (error) throw error;
-
-                            Alert.alert('Success', 'Bill deleted successfully', [
+                            await supabase.from('bills').delete().eq('id', id);
+                            Alert.alert('✅ Deleted', 'Bill removed', [
                                 { text: 'OK', onPress: () => router.back() },
                             ]);
                         } catch (error) {
-                            console.error('Error deleting bill:', error);
                             Alert.alert('Error', 'Failed to delete bill');
                         }
                     },
@@ -343,457 +275,574 @@ export default function BillDetailsScreen() {
         );
     };
 
+    const getCategoryInfo = (category: string) => {
+        return (Colors.category as any)[category] || Colors.category.other;
+    };
+
+    const getCategoryIcon = (category: string) => {
+        const icons: any = {
+            utilities: 'flash',
+            subscriptions: 'tv',
+            insurance: 'shield',
+            rent: 'home',
+            loans: 'card',
+            credit_card: 'card-outline',
+            other: 'ellipsis-horizontal',
+        };
+        return icons[category] || 'document';
+    };
+
+    const getStatusInfo = () => {
+        if (!bill) return null;
+        const dueDate = parseISO(bill.due_date);
+        const daysUntil = differenceInDays(dueDate, new Date());
+
+        if (bill.status === 'paid') {
+            return { color: Colors.status.paid.color, bg: Colors.status.paid.bg, text: 'Paid', icon: 'checkmark-circle' };
+        }
+        if (isPast(dueDate)) {
+            return { color: Colors.status.overdue.color, bg: Colors.status.overdue.bg, text: 'Overdue', icon: 'alert-circle' };
+        }
+        if (isToday(dueDate)) {
+            return { color: Colors.status.due_today.color, bg: Colors.status.due_today.bg, text: 'Due Today', icon: 'time' };
+        }
+        if (daysUntil <= 7) {
+            return { color: Colors.status.due_soon.color, bg: Colors.status.due_soon.bg, text: `Due in ${daysUntil}d`, icon: 'calendar' };
+        }
+        return { color: Colors.status.pending.color, bg: Colors.status.pending.bg, text: `Due in ${daysUntil}d`, icon: 'calendar-outline' };
+    };
+
     if (loading) {
         return (
-            <View style={styles.centered}>
-                <ActivityIndicator size="large" color="#007AFF" />
+            <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={Colors.primary} />
             </View>
         );
     }
 
     if (!bill) {
         return (
-            <View style={styles.centered}>
-                <Text>Bill not found</Text>
+            <View style={styles.loadingContainer}>
+                <Text style={styles.errorText}>Bill not found</Text>
             </View>
         );
     }
 
+    const categoryInfo = getCategoryInfo(bill.category);
+    const statusInfo = getStatusInfo();
+    const categoryIcon = getCategoryIcon(bill.category);
+
     return (
-        <ScrollView style={styles.container}>
-            <View style={styles.header}>
-                <View style={styles.headerTop}>
-                    <Text style={styles.billName}>{bill.name}</Text>
-                    <Text style={styles.billAmount}>${bill.amount}</Text>
-                </View>
-                <View style={styles.categoryBadge}>
-                    <Text style={styles.categoryText}>{bill.category}</Text>
-                </View>
-            </View>
-
-            <View style={styles.section}>
-                <View style={styles.infoRow}>
-                    <View style={styles.infoItem}>
-                        <Ionicons name="calendar" size={24} color="#007AFF" />
-                        <Text style={styles.infoLabel}>Due Date</Text>
-                        <Text style={styles.infoValue}>
-                            {format(parseISO(bill.due_date), 'MMM dd, yyyy')}
-                        </Text>
-                    </View>
-                    <View style={styles.infoItem}>
-                        <Ionicons name="repeat" size={24} color="#007AFF" />
-                        <Text style={styles.infoLabel}>Frequency</Text>
-                        <Text style={styles.infoValue}>{bill.frequency}</Text>
-                    </View>
-                </View>
-
-                <View style={styles.infoRow}>
-                    <View style={styles.infoItem}>
-                        <Ionicons
-                            name={
-                                bill.status === 'paid'
-                                    ? 'checkmark-circle'
-                                    : bill.status === 'overdue'
-                                        ? 'alert-circle'
-                                        : 'time'
-                            }
-                            size={24}
-                            color={
-                                bill.status === 'paid'
-                                    ? '#4CAF50'
-                                    : bill.status === 'overdue'
-                                        ? '#F44336'
-                                        : '#FF9800'
-                            }
-                        />
-                        <Text style={styles.infoLabel}>Status</Text>
-                        <Text style={[styles.infoValue, { textTransform: 'capitalize' }]}>
-                            {bill.status}
-                        </Text>
-                    </View>
-                    <View style={styles.infoItem}>
-                        <Ionicons name="card" size={24} color="#007AFF" />
-                        <Text style={styles.infoLabel}>Auto-pay</Text>
-                        <Text style={styles.infoValue}>{bill.auto_pay ? 'Yes' : 'No'}</Text>
-                    </View>
-                </View>
-            </View>
-
-            {bill.notes && (
-                <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Notes</Text>
-                    <Text style={styles.notesText}>{bill.notes}</Text>
-                </View>
-            )}
-
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Reminders</Text>
-                <View style={styles.remindersList}>
-                    {bill.reminder_days_before.map((days) => (
-                        <View key={days} style={styles.reminderItem}>
-                            <Ionicons name="notifications" size={20} color="#007AFF" />
-                            <Text style={styles.reminderText}>
-                                {days} day{days > 1 ? 's' : ''} before due date
-                            </Text>
-                        </View>
-                    ))}
-                </View>
-            </View>
-
-            {history.length > 0 && (
-                <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Payment History</Text>
-                    {history.map((payment) => (
-                        <View key={payment.id} style={styles.historyItem}>
-                            <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
-                            <View style={styles.historyInfo}>
-                                <Text style={styles.historyDate}>
-                                    {format(parseISO(payment.paid_date), 'MMM dd, yyyy')}
-                                </Text>
-                                {payment.notes && (
-                                    <Text style={styles.historyNotes}>{payment.notes}</Text>
-                                )}
-                            </View>
-                            <Text style={styles.historyAmount}>${payment.amount}</Text>
-                        </View>
-                    ))}
-                </View>
-            )}
-
-            <View style={styles.section}>
-                <View style={styles.attachmentsHeader}>
-                    <Text style={styles.sectionTitle}>Attachments</Text>
+        <View style={styles.container}>
+            {/* Hero Section */}
+            <LinearGradient
+                colors={categoryInfo.gradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.heroSection}
+            >
+                <View style={styles.heroTop}>
                     <TouchableOpacity
-                        style={styles.addAttachmentButton}
-                        onPress={handleAddAttachment}
-                        disabled={uploading}
+                        style={styles.backButton}
+                        onPress={() => router.back()}
+                        activeOpacity={0.8}
                     >
-                        {uploading ? (
-                            <ActivityIndicator size="small" color={Colors.primary} />
-                        ) : (
-                            <>
-                                <Ionicons name="add-circle" size={20} color={Colors.primary} />
-                                <Text style={styles.addAttachmentText}>Add</Text>
-                            </>
-                        )}
+                        <Ionicons name="arrow-back" size={24} color="white" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={styles.editButton}
+                        onPress={() => router.push(`/bill/add?id=${bill.id}`)}
+                        activeOpacity={0.8}
+                    >
+                        <Ionicons name="create-outline" size={24} color="white" />
                     </TouchableOpacity>
                 </View>
 
-                {attachments.length === 0 ? (
-                    <View style={styles.emptyAttachments}>
-                        <Ionicons name="attach-outline" size={48} color={Colors.text.secondary} />
-                        <Text style={styles.emptyAttachmentsText}>No attachments yet</Text>
-                        <Text style={styles.emptyAttachmentsSubtext}>
-                            Add photos or documents related to this bill
+                <View style={styles.heroContent}>
+                    <View style={styles.categoryIconLarge}>
+                        <Ionicons name={categoryIcon as any} size={48} color="white" />
+                    </View>
+                    <Text style={styles.billNameLarge}>{bill.name}</Text>
+                    <Text style={styles.categoryLabel}>{bill.category.replace('_', ' ').toUpperCase()}</Text>
+                    <Text style={styles.amountLarge}>${parseFloat(bill.amount.toString()).toFixed(2)}</Text>
+                </View>
+
+                <View style={styles.heroBottom}>
+                    {statusInfo && (
+                        <View style={[styles.statusPill, { backgroundColor: 'rgba(255,255,255,0.25)' }]}>
+                            <Ionicons name={statusInfo.icon as any} size={16} color="white" />
+                            <Text style={styles.statusPillText}>{statusInfo.text}</Text>
+                        </View>
+                    )}
+                    <View style={styles.datePill}>
+                        <Ionicons name="calendar-outline" size={16} color="white" />
+                        <Text style={styles.datePillText}>{format(parseISO(bill.due_date), 'MMM d, yyyy')}</Text>
+                    </View>
+                </View>
+            </LinearGradient>
+
+            <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                {/* Action Buttons */}
+                {bill.status !== 'paid' && (
+                    <View style={styles.actionButtonsContainer}>
+                        <TouchableOpacity
+                            style={styles.primaryActionButton}
+                            onPress={handleMarkAsPaid}
+                            activeOpacity={0.9}
+                        >
+                            <LinearGradient
+                                colors={Colors.gradient.success}
+                                style={styles.actionButtonGradient}
+                            >
+                                <Ionicons name="checkmark-circle" size={24} color="white" />
+                                <Text style={styles.actionButtonText}>Mark as Paid</Text>
+                            </LinearGradient>
+                        </TouchableOpacity>
+                    </View>
+                )}
+
+                {/* Details Card */}
+                <View style={styles.card}>
+                    <Text style={styles.cardTitle}>Bill Details</Text>
+
+                    <View style={styles.detailRow}>
+                        <View style={styles.detailLeft}>
+                            <Ionicons name="repeat" size={20} color={Colors.text.secondary} />
+                            <Text style={styles.detailLabel}>Frequency</Text>
+                        </View>
+                        <Text style={styles.detailValue}>
+                            {bill.frequency === 'once' ? 'One-time' : bill.frequency.replace('_', ' ')}
                         </Text>
                     </View>
-                ) : (
-                    <View style={styles.attachmentsList}>
-                        {attachments.map((attachment) => (
-                            <TouchableOpacity
-                                key={attachment.id}
-                                style={styles.attachmentCard}
-                                onPress={() => handleViewAttachment(attachment)}
-                            >
-                                <LinearGradient
-                                    colors={attachment.file_type.startsWith('image/') ? Colors.gradient.blue : Colors.gradient.accent}
-                                    start={{ x: 0, y: 0 }}
-                                    end={{ x: 1, y: 1 }}
-                                    style={styles.attachmentIcon}
-                                >
-                                    <Ionicons
-                                        name={getFileIcon(attachment.file_type) as any}
-                                        size={28}
-                                        color="white"
-                                    />
-                                </LinearGradient>
-                                <View style={styles.attachmentInfo}>
-                                    <Text style={styles.attachmentName} numberOfLines={1}>
-                                        {attachment.file_name}
-                                    </Text>
-                                    <Text style={styles.attachmentSize}>
-                                        {formatFileSize(attachment.file_size)}
-                                    </Text>
-                                </View>
+
+                    {bill.auto_pay && (
+                        <View style={styles.detailRow}>
+                            <View style={styles.detailLeft}>
+                                <Ionicons name="flash" size={20} color={Colors.warning} />
+                                <Text style={styles.detailLabel}>Auto-Pay</Text>
+                            </View>
+                            <Text style={[styles.detailValue, { color: Colors.warning }]}>Enabled</Text>
+                        </View>
+                    )}
+
+                    {bill.notes && (
+                        <View style={styles.notesSection}>
+                            <View style={styles.detailLeft}>
+                                <Ionicons name="document-text-outline" size={20} color={Colors.text.secondary} />
+                                <Text style={styles.detailLabel}>Notes</Text>
+                            </View>
+                            <Text style={styles.notesText}>{bill.notes}</Text>
+                        </View>
+                    )}
+                </View>
+
+                {/* Attachments Card */}
+                <View style={styles.card}>
+                    <View style={styles.cardHeader}>
+                        <Text style={styles.cardTitle}>Attachments ({attachments.length})</Text>
+                        <TouchableOpacity
+                            onPress={handleAddAttachment}
+                            disabled={uploading}
+                            activeOpacity={0.7}
+                        >
+                            {uploading ? (
+                                <ActivityIndicator size="small" color={Colors.primary} />
+                            ) : (
+                                <Ionicons name="add-circle" size={28} color={Colors.primary} />
+                            )}
+                        </TouchableOpacity>
+                    </View>
+
+                    {attachments.length === 0 ? (
+                        <View style={styles.emptyAttachments}>
+                            <Ionicons name="attach" size={32} color={Colors.text.light} />
+                            <Text style={styles.emptyText}>No attachments yet</Text>
+                            <Text style={styles.emptySubtext}>Add photos or documents</Text>
+                        </View>
+                    ) : (
+                        <View style={styles.attachmentsList}>
+                            {attachments.map((attachment) => (
                                 <TouchableOpacity
-                                    style={styles.deleteAttachmentButton}
-                                    onPress={() => handleDeleteAttachment(attachment)}
+                                    key={attachment.id}
+                                    style={styles.attachmentItem}
+                                    onPress={() => handleViewAttachment(attachment)}
+                                    activeOpacity={0.8}
                                 >
-                                    <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                                    <View style={styles.attachmentIcon}>
+                                        <Ionicons
+                                            name={getFileIcon(attachment.file_type)}
+                                            size={24}
+                                            color={Colors.primary}
+                                        />
+                                    </View>
+                                    <View style={styles.attachmentInfo}>
+                                        <Text style={styles.attachmentName} numberOfLines={1}>
+                                            {attachment.file_name}
+                                        </Text>
+                                        <Text style={styles.attachmentSize}>
+                                            {formatFileSize(attachment.file_size)}
+                                        </Text>
+                                    </View>
+                                    <TouchableOpacity
+                                        onPress={() => handleDeleteAttachment(attachment)}
+                                        activeOpacity={0.7}
+                                    >
+                                        <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                                    </TouchableOpacity>
                                 </TouchableOpacity>
-                            </TouchableOpacity>
+                            ))}
+                        </View>
+                    )}
+                </View>
+
+                {/* Payment History */}
+                {history.length > 0 && (
+                    <View style={styles.card}>
+                        <Text style={styles.cardTitle}>Payment History ({history.length})</Text>
+                        {history.slice(0, 5).map((payment, index) => (
+                            <View key={payment.id} style={styles.historyItem}>
+                                <View style={styles.historyLeft}>
+                                    <View style={styles.historyIcon}>
+                                        <Ionicons name="checkmark" size={16} color={Colors.success} />
+                                    </View>
+                                    <View>
+                                        <Text style={styles.historyAmount}>
+                                            ${parseFloat(payment.amount.toString()).toFixed(2)}
+                                        </Text>
+                                        <Text style={styles.historyDate}>
+                                            {format(parseISO(payment.paid_date), 'MMM d, yyyy')}
+                                        </Text>
+                                    </View>
+                                </View>
+                                <Ionicons name="chevron-forward" size={20} color={Colors.text.light} />
+                            </View>
                         ))}
                     </View>
                 )}
-            </View>
 
-            <View style={styles.actions}>
-                {bill.status === 'pending' && (
+                {/* Quick Actions */}
+                <View style={styles.card}>
+                    <Text style={styles.cardTitle}>Quick Actions</Text>
                     <TouchableOpacity
-                        style={styles.primaryButton}
-                        onPress={handleMarkAsPaid}
+                        style={styles.quickAction}
+                        onPress={handleExportToCalendar}
+                        activeOpacity={0.8}
                     >
-                        <Ionicons name="checkmark-circle" size={24} color="#fff" />
-                        <Text style={styles.primaryButtonText}>Mark as Paid</Text>
+                        <View style={styles.quickActionLeft}>
+                            <View style={[styles.quickActionIcon, { backgroundColor: Colors.info + '20' }]}>
+                                <Ionicons name="calendar" size={20} color={Colors.info} />
+                            </View>
+                            <Text style={styles.quickActionText}>Export to Calendar</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color={Colors.text.light} />
                     </TouchableOpacity>
-                )}
 
-                <TouchableOpacity style={styles.calendarButton} onPress={handleExportToCalendar}>
-                    <Ionicons name="calendar" size={24} color="#007AFF" />
-                    <Text style={styles.calendarButtonText}>Export to Calendar</Text>
-                </TouchableOpacity>
+                    <TouchableOpacity
+                        style={styles.quickAction}
+                        onPress={handleDelete}
+                        activeOpacity={0.8}
+                    >
+                        <View style={styles.quickActionLeft}>
+                            <View style={[styles.quickActionIcon, { backgroundColor: Colors.danger + '20' }]}>
+                                <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                            </View>
+                            <Text style={[styles.quickActionText, { color: Colors.danger }]}>Delete Bill</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color={Colors.danger} />
+                    </TouchableOpacity>
+                </View>
 
-                <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
-                    <Ionicons name="trash" size={24} color="#F44336" />
-                    <Text style={styles.deleteButtonText}>Delete Bill</Text>
-                </TouchableOpacity>
-            </View>
-        </ScrollView>
+                <View style={{ height: 40 }} />
+            </ScrollView>
+        </View>
     );
 }
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: Colors.background,
     },
-    centered: {
+    loadingContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        backgroundColor: Colors.background,
     },
-    header: {
-        backgroundColor: '#007AFF',
-        padding: 20,
-        paddingTop: 40,
+    errorText: {
+        fontSize: 16,
+        color: Colors.text.secondary,
     },
-    headerTop: {
-        marginBottom: 12,
+    heroSection: {
+        paddingTop: Platform.OS === 'ios' ? 60 : 40,
+        paddingBottom: 32,
+        paddingHorizontal: CARD_MARGIN,
     },
-    billName: {
-        fontSize: 28,
-        fontWeight: 'bold',
-        color: '#fff',
-        marginBottom: 8,
-    },
-    billAmount: {
-        fontSize: 36,
-        fontWeight: 'bold',
-        color: '#fff',
-    },
-    categoryBadge: {
-        alignSelf: 'flex-start',
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 16,
-    },
-    categoryText: {
-        color: '#fff',
-        fontSize: 14,
-        fontWeight: '600',
-        textTransform: 'capitalize',
-    },
-    section: {
-        backgroundColor: '#fff',
-        marginTop: 12,
-        padding: 20,
-    },
-    sectionTitle: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#333',
-        marginBottom: 16,
-    },
-    infoRow: {
+    heroTop: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        marginBottom: 20,
+        marginBottom: 24,
     },
-    infoItem: {
-        flex: 1,
+    backButton: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(255,255,255,0.2)',
+        justifyContent: 'center',
         alignItems: 'center',
     },
-    infoLabel: {
-        fontSize: 14,
-        color: '#666',
-        marginTop: 8,
-        marginBottom: 4,
+    editButton: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(255,255,255,0.2)',
+        justifyContent: 'center',
+        alignItems: 'center',
     },
-    infoValue: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#333',
-        textTransform: 'capitalize',
+    heroContent: {
+        alignItems: 'center',
     },
-    notesText: {
-        fontSize: 16,
-        color: '#666',
-        lineHeight: 24,
+    categoryIconLarge: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: 'rgba(255,255,255,0.25)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 16,
     },
-    remindersList: {
+    billNameLarge: {
+        fontSize: 28,
+        fontWeight: '800',
+        color: 'white',
+        textAlign: 'center',
+        marginBottom: 6,
+    },
+    categoryLabel: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: 'rgba(255,255,255,0.8)',
+        letterSpacing: 1.2,
+        marginBottom: 12,
+    },
+    amountLarge: {
+        fontSize: 48,
+        fontWeight: '800',
+        color: 'white',
+        marginBottom: 16,
+    },
+    heroBottom: {
+        flexDirection: 'row',
+        justifyContent: 'center',
         gap: 12,
     },
-    reminderItem: {
+    statusPill: {
         flexDirection: 'row',
         alignItems: 'center',
-        padding: 12,
-        backgroundColor: '#f5f5f5',
-        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 16,
+        gap: 6,
     },
-    reminderText: {
-        marginLeft: 12,
-        fontSize: 16,
-        color: '#333',
+    statusPillText: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: 'white',
     },
-    historyItem: {
+    datePill: {
         flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 16,
+        backgroundColor: 'rgba(255,255,255,0.25)',
+        gap: 6,
+    },
+    datePillText: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: 'white',
+    },
+    scrollContent: {
+        flex: 1,
+    },
+    actionButtonsContainer: {
+        paddingHorizontal: CARD_MARGIN,
+        paddingTop: 20,
+        paddingBottom: 8,
+    },
+    primaryActionButton: {
+        borderRadius: 16,
+        overflow: 'hidden',
+        ...Colors.shadow.md,
+    },
+    actionButtonGradient: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 16,
+        gap: 10,
+    },
+    actionButtonText: {
+        fontSize: 18,
+        fontWeight: '700',
+        color: 'white',
+    },
+    card: {
+        backgroundColor: Colors.card,
+        marginHorizontal: CARD_MARGIN,
+        marginTop: 16,
+        borderRadius: 20,
+        padding: 20,
+        ...Colors.shadow.sm,
+    },
+    cardHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    cardTitle: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: Colors.text.primary,
+        marginBottom: 16,
+    },
+    detailRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
         alignItems: 'center',
         paddingVertical: 12,
         borderBottomWidth: 1,
-        borderBottomColor: '#f0f0f0',
+        borderBottomColor: Colors.background,
     },
-    historyInfo: {
-        flex: 1,
-        marginLeft: 12,
+    detailLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
     },
-    historyDate: {
+    detailLabel: {
         fontSize: 16,
-        color: '#333',
+        color: Colors.text.secondary,
         fontWeight: '500',
     },
-    historyNotes: {
-        fontSize: 14,
-        color: '#666',
-        marginTop: 4,
-    },
-    historyAmount: {
+    detailValue: {
         fontSize: 16,
-        fontWeight: 'bold',
-        color: '#4CAF50',
-    },
-    actions: {
-        padding: 20,
-        paddingBottom: 40,
-    },
-    primaryButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: '#4CAF50',
-        padding: 16,
-        borderRadius: 8,
-        marginBottom: 12,
-    },
-    primaryButtonText: {
-        marginLeft: 8,
-        color: '#fff',
-        fontSize: 18,
         fontWeight: '600',
+        color: Colors.text.primary,
+        textTransform: 'capitalize',
     },
-    calendarButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: '#fff',
-        borderWidth: 2,
-        borderColor: '#007AFF',
-        padding: 16,
-        borderRadius: 8,
-        marginBottom: 12,
+    notesSection: {
+        paddingTop: 12,
     },
-    calendarButtonText: {
-        marginLeft: 8,
-        color: '#007AFF',
-        fontSize: 18,
-        fontWeight: '600',
-    },
-    deleteButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: '#fff',
-        padding: 16,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: '#F44336',
-    },
-    deleteButtonText: {
-        marginLeft: 8,
-        color: '#F44336',
-        fontSize: 18,
-        fontWeight: '600',
-    },
-    attachmentsHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 16,
-    },
-    addAttachmentButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 20,
-        backgroundColor: Colors.background,
-    },
-    addAttachmentText: {
-        fontSize: 14,
-        color: Colors.primary,
-        fontWeight: '600',
-        marginLeft: 4,
+    notesText: {
+        fontSize: 15,
+        color: Colors.text.primary,
+        lineHeight: 22,
+        marginTop: 8,
     },
     emptyAttachments: {
         alignItems: 'center',
         paddingVertical: 32,
     },
-    emptyAttachmentsText: {
+    emptyText: {
         fontSize: 16,
-        color: Colors.text.primary,
         fontWeight: '600',
+        color: Colors.text.secondary,
         marginTop: 12,
     },
-    emptyAttachmentsSubtext: {
+    emptySubtext: {
         fontSize: 14,
-        color: Colors.text.secondary,
+        color: Colors.text.light,
         marginTop: 4,
-        textAlign: 'center',
     },
     attachmentsList: {
         gap: 12,
     },
-    attachmentCard: {
+    attachmentItem: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: Colors.card,
-        borderRadius: 12,
         padding: 12,
-        ...Colors.shadow.sm,
+        backgroundColor: Colors.background,
+        borderRadius: 12,
+        gap: 12,
     },
     attachmentIcon: {
-        width: 56,
-        height: 56,
-        borderRadius: 12,
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: Colors.primary + '20',
         justifyContent: 'center',
         alignItems: 'center',
     },
     attachmentInfo: {
         flex: 1,
-        marginLeft: 12,
     },
     attachmentName: {
         fontSize: 15,
-        color: Colors.text.primary,
         fontWeight: '600',
+        color: Colors.text.primary,
         marginBottom: 4,
     },
     attachmentSize: {
         fontSize: 13,
         color: Colors.text.secondary,
     },
-    deleteAttachmentButton: {
-        padding: 8,
+    historyItem: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: Colors.background,
+    },
+    historyLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    historyIcon: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: Colors.success + '20',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    historyAmount: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: Colors.text.primary,
+        marginBottom: 2,
+    },
+    historyDate: {
+        fontSize: 13,
+        color: Colors.text.secondary,
+    },
+    quickAction: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 14,
+        borderBottomWidth: 1,
+        borderBottomColor: Colors.background,
+    },
+    quickActionLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    quickActionIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    quickActionText: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: Colors.text.primary,
     },
 });
 

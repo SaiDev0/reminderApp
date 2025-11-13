@@ -87,10 +87,10 @@ export default function RootLayout() {
 
     return (
         <>
-            <StatusBar style="auto" />
+            <StatusBar style="light" />
             <Stack>
                 <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-                <Stack.Screen name="bill/[id]" options={{ title: 'Bill Details' }} />
+                <Stack.Screen name="bill/[id]" options={{ headerShown: false }} />
                 <Stack.Screen name="bill/add" options={{ title: 'Add Bill' }} />
                 <Stack.Screen name="auth/login" options={{ title: 'Login' }} />
                 <Stack.Screen
@@ -102,6 +102,7 @@ export default function RootLayout() {
                     }}
                 />
                 <Stack.Screen name="budget/index" options={{ headerShown: false }} />
+                <Stack.Screen name="achievements/index" options={{ headerShown: false }} />
             </Stack>
         </>
     );

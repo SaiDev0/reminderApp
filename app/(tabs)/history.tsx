@@ -7,12 +7,19 @@ import {
     RefreshControl,
     ActivityIndicator,
     Alert,
+    Dimensions,
+    Platform,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../../lib/supabase';
 import { PaymentHistory } from '../../lib/types';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, startOfMonth, endOfMonth } from 'date-fns';
+import { Colors } from '../../constants/Colors';
+
+const { width } = Dimensions.get('window');
+const CARD_MARGIN = 16;
 
 interface PaymentWithBill extends PaymentHistory {
     bill_name: string;
@@ -67,45 +74,86 @@ export default function HistoryScreen() {
         return history.reduce((sum, item) => sum + parseFloat(item.amount.toString()), 0);
     };
 
+    const getMonthStats = () => {
+        const now = new Date();
+        const monthStart = startOfMonth(now);
+        const monthEnd = endOfMonth(now);
+
+        const thisMonthPayments = history.filter(item => {
+            const paidDate = parseISO(item.paid_date);
+            return paidDate >= monthStart && paidDate <= monthEnd;
+        });
+
+        const thisMonthTotal = thisMonthPayments.reduce(
+            (sum, item) => sum + parseFloat(item.amount.toString()),
+            0
+        );
+
+        return {
+            count: thisMonthPayments.length,
+            total: thisMonthTotal,
+        };
+    };
+
     const renderHistoryItem = ({ item }: { item: PaymentWithBill }) => (
         <View style={styles.historyCard}>
-            <View style={styles.iconContainer}>
-                <Ionicons name="checkmark-circle" size={32} color="#4CAF50" />
-            </View>
+            <View style={styles.historyLeft}>
+                <View style={styles.iconContainer}>
+                    <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+                </View>
 
-            <View style={styles.historyInfo}>
-                <Text style={styles.billName}>{item.bill_name}</Text>
-                <Text style={styles.paidDate}>
-                    Paid on {format(parseISO(item.paid_date), 'MMM dd, yyyy')}
-                </Text>
-                {item.notes && (
-                    <Text style={styles.notes}>{item.notes}</Text>
-                )}
-            </View>
-
-            <View style={styles.amountContainer}>
-                <Text style={styles.amount}>${parseFloat(item.amount.toString()).toFixed(2)}</Text>
-            </View>
-        </View>
-    );
-
-    const renderHeader = () => (
-        <View style={styles.header}>
-            <View style={styles.summaryCard}>
-                <Ionicons name="wallet" size={32} color="#4CAF50" />
-                <View style={styles.summaryInfo}>
-                    <Text style={styles.summaryLabel}>Total Paid</Text>
-                    <Text style={styles.summaryValue}>${getTotalPaid().toFixed(2)}</Text>
+                <View style={styles.historyInfo}>
+                    <Text style={styles.billName}>{item.bill_name}</Text>
+                    <Text style={styles.paidDate}>
+                        {format(parseISO(item.paid_date), 'MMM dd, yyyy')}
+                    </Text>
                 </View>
             </View>
-            <Text style={styles.sectionTitle}>Payment History</Text>
+
+            <Text style={styles.amount}>${parseFloat(item.amount.toString()).toFixed(2)}</Text>
         </View>
     );
+
+    const renderHeader = () => {
+        const monthStats = getMonthStats();
+
+        return (
+            <>
+                <LinearGradient
+                    colors={Colors.gradient.emerald}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.heroSection}
+                >
+                    <Text style={styles.heroTitle}>Payment History</Text>
+                    <Text style={styles.heroSubtitle}>Track all your payments</Text>
+
+                    <View style={styles.statsRow}>
+                        <View style={styles.statCard}>
+                            <Text style={styles.statLabel}>ALL TIME</Text>
+                            <Text style={styles.statValue}>${getTotalPaid().toFixed(2)}</Text>
+                            <Text style={styles.statSubtext}>{history.length} payments</Text>
+                        </View>
+
+                        <View style={styles.statCard}>
+                            <Text style={styles.statLabel}>THIS MONTH</Text>
+                            <Text style={styles.statValue}>${monthStats.total.toFixed(2)}</Text>
+                            <Text style={styles.statSubtext}>{monthStats.count} payments</Text>
+                        </View>
+                    </View>
+                </LinearGradient>
+
+                <View style={styles.listHeader}>
+                    <Text style={styles.sectionTitle}>Recent Payments</Text>
+                </View>
+            </>
+        );
+    };
 
     if (loading) {
         return (
             <View style={styles.centered}>
-                <ActivityIndicator size="large" color="#007AFF" />
+                <ActivityIndicator size="large" color={Colors.primary} />
             </View>
         );
     }
@@ -119,17 +167,27 @@ export default function HistoryScreen() {
                 ListHeaderComponent={renderHeader}
                 ListEmptyComponent={
                     <View style={styles.emptyState}>
-                        <Ionicons name="receipt-outline" size={64} color="#ccc" />
+                        <LinearGradient
+                            colors={Colors.gradient.emerald}
+                            style={styles.emptyIcon}
+                        >
+                            <Ionicons name="receipt-outline" size={48} color="white" />
+                        </LinearGradient>
                         <Text style={styles.emptyText}>No payment history</Text>
                         <Text style={styles.emptySubtext}>
-                            Payments you make will appear here
+                            Start paying bills to see your history here
                         </Text>
                     </View>
                 }
                 refreshControl={
-                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        tintColor={Colors.primary}
+                    />
                 }
                 contentContainerStyle={styles.listContent}
+                showsVerticalScrollIndicator={false}
             />
         </View>
     );
@@ -138,65 +196,100 @@ export default function HistoryScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: Colors.background,
     },
     centered: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        backgroundColor: Colors.background,
     },
     listContent: {
-        padding: 16,
+        paddingBottom: 100,
     },
-    header: {
-        marginBottom: 20,
+    // Hero Section
+    heroSection: {
+        paddingTop: Platform.OS === 'ios' ? 70 : 50,
+        paddingBottom: 32,
+        paddingHorizontal: CARD_MARGIN,
+        marginBottom: 16,
     },
-    summaryCard: {
+    heroTitle: {
+        fontSize: 32,
+        fontWeight: '800',
+        color: 'white',
+        marginBottom: 6,
+    },
+    heroSubtitle: {
+        fontSize: 16,
+        color: 'rgba(255,255,255,0.9)',
+        marginBottom: 24,
+        fontWeight: '500',
+    },
+    statsRow: {
         flexDirection: 'row',
+        gap: 12,
+    },
+    statCard: {
+        flex: 1,
+        backgroundColor: 'rgba(255,255,255,0.2)',
+        borderRadius: 16,
+        padding: 16,
         alignItems: 'center',
-        backgroundColor: '#fff',
-        padding: 20,
-        borderRadius: 12,
-        marginBottom: 20,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
     },
-    summaryInfo: {
-        marginLeft: 16,
+    statLabel: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: 'rgba(255,255,255,0.85)',
+        letterSpacing: 1,
+        marginBottom: 8,
     },
-    summaryLabel: {
-        fontSize: 14,
-        color: '#666',
+    statValue: {
+        fontSize: 28,
+        fontWeight: '800',
+        color: 'white',
         marginBottom: 4,
     },
-    summaryValue: {
-        fontSize: 28,
-        fontWeight: 'bold',
-        color: '#333',
+    statSubtext: {
+        fontSize: 13,
+        color: 'rgba(255,255,255,0.85)',
+        fontWeight: '500',
+    },
+    // List Header
+    listHeader: {
+        paddingHorizontal: CARD_MARGIN,
+        marginBottom: 12,
     },
     sectionTitle: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#333',
-        marginBottom: 12,
+        fontSize: 22,
+        fontWeight: '700',
+        color: Colors.text.primary,
     },
+    // History Cards
     historyCard: {
         flexDirection: 'row',
-        backgroundColor: '#fff',
-        borderRadius: 12,
-        padding: 16,
-        marginBottom: 12,
         alignItems: 'center',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+        justifyContent: 'space-between',
+        backgroundColor: Colors.card,
+        borderRadius: 16,
+        padding: 16,
+        marginHorizontal: CARD_MARGIN,
+        marginBottom: 12,
+        ...Colors.shadow.sm,
+    },
+    historyLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+        marginRight: 12,
     },
     iconContainer: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: Colors.success + '20',
+        justifyContent: 'center',
+        alignItems: 'center',
         marginRight: 12,
     },
     historyInfo: {
@@ -205,43 +298,44 @@ const styles = StyleSheet.create({
     billName: {
         fontSize: 16,
         fontWeight: '600',
-        color: '#333',
+        color: Colors.text.primary,
         marginBottom: 4,
     },
     paidDate: {
-        fontSize: 14,
-        color: '#666',
-    },
-    notes: {
-        fontSize: 12,
-        color: '#999',
-        marginTop: 4,
-        fontStyle: 'italic',
-    },
-    amountContainer: {
-        alignItems: 'flex-end',
+        fontSize: 13,
+        color: Colors.text.secondary,
+        fontWeight: '500',
     },
     amount: {
-        fontSize: 18,
-        fontWeight: 'bold',
-        color: '#4CAF50',
+        fontSize: 20,
+        fontWeight: '700',
+        color: Colors.success,
     },
+    // Empty State
     emptyState: {
         alignItems: 'center',
+        paddingTop: 80,
+        paddingHorizontal: 40,
+    },
+    emptyIcon: {
+        width: 96,
+        height: 96,
+        borderRadius: 48,
         justifyContent: 'center',
-        paddingVertical: 60,
+        alignItems: 'center',
+        marginBottom: 24,
     },
     emptyText: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#333',
-        marginTop: 16,
+        fontSize: 24,
+        fontWeight: '700',
+        color: Colors.text.primary,
+        marginBottom: 8,
     },
     emptySubtext: {
-        fontSize: 14,
-        color: '#666',
-        marginTop: 8,
+        fontSize: 15,
+        color: Colors.text.secondary,
         textAlign: 'center',
+        lineHeight: 22,
     },
 });
 

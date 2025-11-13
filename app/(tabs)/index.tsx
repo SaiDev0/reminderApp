@@ -10,6 +10,7 @@ import {
     Alert,
     Dimensions,
     Animated,
+    Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
@@ -19,26 +20,31 @@ import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { Bill } from '../../lib/types';
-import { format, isToday, isTomorrow, isPast, parseISO } from 'date-fns';
+import { format, isToday, isTomorrow, isPast, parseISO, differenceInDays } from 'date-fns';
 import { Colors } from '../../constants/Colors';
+import { checkAndUnlockAchievements, getUserStats } from '../../lib/gamification';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
+const CARD_MARGIN = 16;
+const CARD_WIDTH = width - (CARD_MARGIN * 2);
 
 export default function DashboardScreen() {
     const [bills, setBills] = useState<Bill[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [user, setUser] = useState<any>(null);
+    const [stats, setStats] = useState<any>(null);
+    const scrollY = new Animated.Value(0);
 
     useEffect(() => {
         checkUser();
     }, []);
 
-    // Refresh data when screen comes into focus
     useFocusEffect(
         useCallback(() => {
             if (user) {
                 fetchUpcomingBills();
+                fetchUserStats();
             }
         }, [user])
     );
@@ -53,6 +59,15 @@ export default function DashboardScreen() {
 
         setUser(session.user);
         fetchUpcomingBills();
+        fetchUserStats();
+    };
+
+    const fetchUserStats = async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+
+        const userStats = await getUserStats(user.id);
+        setStats(userStats);
     };
 
     const fetchUpcomingBills = async () => {
@@ -67,6 +82,7 @@ export default function DashboardScreen() {
                 .select('*')
                 .gte('due_date', today)
                 .lte('due_date', thirtyDaysFromNow)
+                .eq('status', 'pending')
                 .order('due_date', { ascending: true });
 
             if (error) throw error;
@@ -84,43 +100,51 @@ export default function DashboardScreen() {
     const onRefresh = useCallback(() => {
         setRefreshing(true);
         fetchUpcomingBills();
+        fetchUserStats();
     }, []);
 
-    const getStatusColor = (bill: Bill) => {
+    const getStatusInfo = (bill: Bill) => {
         const dueDate = parseISO(bill.due_date);
+        const daysUntil = differenceInDays(dueDate, new Date());
 
-        if (bill.status === 'paid') return '#4CAF50';
-        if (bill.status === 'overdue' || isPast(dueDate)) return '#F44336';
-        if (isToday(dueDate)) return '#FF9800';
-        if (isTomorrow(dueDate)) return '#FFC107';
-        return '#2196F3';
+        if (bill.status === 'paid') {
+            return { color: Colors.status.paid.color, bg: Colors.status.paid.bg, text: 'Paid', icon: 'checkmark-circle' };
+        }
+        if (bill.status === 'overdue' || isPast(dueDate)) {
+            return { color: Colors.status.overdue.color, bg: Colors.status.overdue.bg, text: 'Overdue', icon: 'alert-circle' };
+        }
+        if (isToday(dueDate)) {
+            return { color: Colors.status.due_today.color, bg: Colors.status.due_today.bg, text: 'Due Today', icon: 'time' };
+        }
+        if (isTomorrow(dueDate)) {
+            return { color: Colors.status.due_soon.color, bg: Colors.status.due_soon.bg, text: 'Tomorrow', icon: 'calendar' };
+        }
+        if (daysUntil <= 7) {
+            return { color: Colors.status.due_soon.color, bg: Colors.status.due_soon.bg, text: `${daysUntil} days`, icon: 'calendar-outline' };
+        }
+        return { color: Colors.status.pending.color, bg: Colors.status.pending.bg, text: `${daysUntil} days`, icon: 'calendar-outline' };
     };
 
-    const getDueDateText = (dueDate: string) => {
-        const date = parseISO(dueDate);
-
-        if (isToday(date)) return 'Due Today';
-        if (isTomorrow(date)) return 'Due Tomorrow';
-        if (isPast(date)) return 'Overdue';
-        return `Due ${format(date, 'MMM dd')}`;
+    const getCategoryInfo = (category: string) => {
+        const categoryData = (Colors.category as any)[category];
+        return categoryData || Colors.category.other;
     };
 
     const getCategoryIcon = (category: string) => {
         const icons: any = {
             utilities: 'flash',
             subscriptions: 'tv',
-            insurance: 'shield-checkmark',
+            insurance: 'shield',
             rent: 'home',
             loans: 'card',
             credit_card: 'card-outline',
-            other: 'ellipsis-horizontal-circle',
+            other: 'ellipsis-horizontal',
         };
         return icons[category] || 'document';
     };
 
     const handleMarkAsPaid = async (bill: Bill) => {
         try {
-            // Add to payment history
             const { error: historyError } = await supabase
                 .from('payment_history')
                 .insert({
@@ -131,7 +155,6 @@ export default function DashboardScreen() {
 
             if (historyError) throw historyError;
 
-            // Update bill status
             const { error: billError } = await supabase
                 .from('bills')
                 .update({ status: 'paid' })
@@ -139,7 +162,6 @@ export default function DashboardScreen() {
 
             if (billError) throw billError;
 
-            // If recurring, update to next due date
             if (bill.frequency !== 'once') {
                 const nextDueDate = calculateNextDueDate(bill.due_date, bill.frequency);
                 await supabase
@@ -151,8 +173,13 @@ export default function DashboardScreen() {
                     .eq('id', bill.id);
             }
 
-            // Refresh the list
             fetchUpcomingBills();
+            fetchUserStats();
+
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                await checkAndUnlockAchievements(user.id);
+            }
 
             Alert.alert('✅ Paid!', `${bill.name} marked as paid`);
         } catch (error) {
@@ -192,21 +219,22 @@ export default function DashboardScreen() {
     const renderRightActions = (bill: Bill, progress: Animated.AnimatedInterpolation<number>) => {
         const translateX = progress.interpolate({
             inputRange: [0, 1],
-            outputRange: [100, 0],
+            outputRange: [80, 0],
         });
 
         return (
-            <Animated.View style={[styles.swipeActions, { transform: [{ translateX }] }]}>
+            <Animated.View style={[styles.swipeAction, { transform: [{ translateX }] }]}>
                 <TouchableOpacity
-                    style={styles.markPaidButton}
+                    style={styles.swipeButton}
                     onPress={() => handleMarkAsPaid(bill)}
+                    activeOpacity={0.8}
                 >
                     <LinearGradient
                         colors={Colors.gradient.success}
-                        style={styles.markPaidGradient}
+                        style={styles.swipeGradient}
                     >
-                        <Ionicons name="checkmark-circle" size={28} color="white" />
-                        <Text style={styles.swipeActionText}>Mark Paid</Text>
+                        <Ionicons name="checkmark-circle" size={24} color="white" />
+                        <Text style={styles.swipeText}>Paid</Text>
                     </LinearGradient>
                 </TouchableOpacity>
             </Animated.View>
@@ -216,198 +244,249 @@ export default function DashboardScreen() {
     const renderLeftActions = (bill: Bill, progress: Animated.AnimatedInterpolation<number>) => {
         const translateX = progress.interpolate({
             inputRange: [0, 1],
-            outputRange: [-100, 0],
+            outputRange: [-80, 0],
         });
 
         return (
-            <Animated.View style={[styles.swipeActions, { transform: [{ translateX }] }]}>
+            <Animated.View style={[styles.swipeAction, { transform: [{ translateX }] }]}>
                 <TouchableOpacity
-                    style={styles.editButton}
+                    style={styles.swipeButton}
                     onPress={() => router.push(`/bill/${bill.id}`)}
+                    activeOpacity={0.8}
                 >
                     <LinearGradient
                         colors={Colors.gradient.blue}
-                        style={styles.editButtonGradient}
+                        style={styles.swipeGradient}
                     >
-                        <Ionicons name="create-outline" size={28} color="white" />
-                        <Text style={styles.swipeActionText}>Edit</Text>
+                        <Ionicons name="create-outline" size={24} color="white" />
+                        <Text style={styles.swipeText}>Edit</Text>
                     </LinearGradient>
                 </TouchableOpacity>
             </Animated.View>
         );
     };
 
-    const renderBillItem = ({ item }: { item: Bill }) => (
-        <Swipeable
-            renderRightActions={(progress) => renderRightActions(item, progress)}
-            renderLeftActions={(progress) => renderLeftActions(item, progress)}
-            overshootRight={false}
-            overshootLeft={false}
-        >
-            <TouchableOpacity
-                style={styles.billCard}
-                onPress={() => router.push(`/bill/${item.id}`)}
-                activeOpacity={0.7}
-            >
-                <LinearGradient
-                    colors={['rgba(255,255,255,0.95)', 'rgba(255,255,255,0.9)']}
-                    style={styles.billCardGradient}
-                >
-                    <View style={styles.billCardInner}>
-                        <View style={styles.billCardLeft}>
-                            <LinearGradient
-                                colors={
-                                    item.status === 'overdue' || isPast(parseISO(item.due_date))
-                                        ? Colors.gradient.danger
-                                        : isToday(parseISO(item.due_date))
-                                            ? Colors.gradient.orange
-                                            : Colors.gradient.primary
-                                }
-                                style={styles.billIcon}
-                            >
-                                <Ionicons name={getCategoryIcon(item.category)} size={24} color="white" />
-                            </LinearGradient>
+    const renderBillCard = ({ item, index }: { item: Bill; index: number }) => {
+        const statusInfo = getStatusInfo(item);
+        const categoryInfo = getCategoryInfo(item.category);
+        const icon = getCategoryIcon(item.category);
 
-                            <View style={styles.billInfo}>
-                                <Text style={styles.billName}>{item.name}</Text>
-                                <View style={styles.billMeta}>
-                                    <Ionicons name="calendar-outline" size={14} color={Colors.text.secondary} />
-                                    <Text style={styles.billDate}>{getDueDateText(item.due_date)}</Text>
+        return (
+            <Animated.View style={{ opacity: 1, transform: [{ translateY: 0 }] }}>
+                <Swipeable
+                    renderRightActions={(progress) => renderRightActions(item, progress)}
+                    renderLeftActions={(progress) => renderLeftActions(item, progress)}
+                    overshootRight={false}
+                    overshootLeft={false}
+                >
+                    <TouchableOpacity
+                        style={styles.billCard}
+                        onPress={() => router.push(`/bill/${item.id}`)}
+                        activeOpacity={0.9}
+                    >
+                        {/* Category Color Bar */}
+                        <LinearGradient
+                            colors={categoryInfo.gradient}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.categoryBar}
+                        />
+
+                        <View style={styles.billCardContent}>
+                            {/* Left Section */}
+                            <View style={styles.billLeft}>
+                                <View style={[styles.categoryIcon, { backgroundColor: categoryInfo.light }]}>
+                                    <Ionicons name={icon} size={24} color={categoryInfo.color} />
+                                </View>
+
+                                <View style={styles.billInfo}>
+                                    <Text style={styles.billName} numberOfLines={1}>{item.name}</Text>
+                                    <View style={styles.billMeta}>
+                                        <View style={[styles.statusBadge, { backgroundColor: statusInfo.bg }]}>
+                                            <Ionicons name={statusInfo.icon as any} size={12} color={statusInfo.color} />
+                                            <Text style={[styles.statusText, { color: statusInfo.color }]}>
+                                                {statusInfo.text}
+                                            </Text>
+                                        </View>
+                                        {item.auto_pay && (
+                                            <View style={styles.autoBadge}>
+                                                <Ionicons name="flash" size={10} color={Colors.warning} />
+                                                <Text style={styles.autoText}>Auto</Text>
+                                            </View>
+                                        )}
+                                    </View>
                                 </View>
                             </View>
-                        </View>
 
-                        <View style={styles.billCardRight}>
-                            <Text style={styles.billAmount}>${parseFloat(item.amount.toString()).toFixed(2)}</Text>
-                            {item.auto_pay && (
-                                <View style={styles.autoPayBadge}>
-                                    <Ionicons name="flash" size={12} color={Colors.success} />
-                                    <Text style={styles.autoPayText}>Auto</Text>
-                                </View>
-                            )}
+                            {/* Right Section */}
+                            <View style={styles.billRight}>
+                                <Text style={styles.billAmount}>${parseFloat(item.amount.toString()).toFixed(2)}</Text>
+                                <Text style={styles.billDate}>{format(parseISO(item.due_date), 'MMM d')}</Text>
+                            </View>
                         </View>
-                    </View>
-                </LinearGradient>
-            </TouchableOpacity>
-        </Swipeable>
-    );
+                    </TouchableOpacity>
+                </Swipeable>
+            </Animated.View>
+        );
+    };
 
     const renderHeader = () => {
-        const overdueBills = bills.filter(b => b.status === 'overdue' || isPast(parseISO(b.due_date)));
+        const overdueBills = bills.filter(b => isPast(parseISO(b.due_date)));
         const dueTodayBills = bills.filter(b => isToday(parseISO(b.due_date)));
         const totalUpcoming = bills.reduce((sum, b) => sum + parseFloat(b.amount.toString()), 0);
 
         return (
-            <View style={styles.header}>
+            <View style={styles.headerContainer}>
+                {/* Hero Card */}
                 <LinearGradient
-                    colors={Colors.gradient.primary}
+                    colors={Colors.gradient.sunset}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
-                    style={styles.heroSection}
+                    style={styles.heroCard}
                 >
                     <View style={styles.heroContent}>
-                        <Text style={styles.greeting}>Hello! 👋</Text>
-                        <Text style={styles.subtitle}>Track your bills with ease</Text>
+                        <View style={styles.heroTop}>
+                            <View>
+                                <Text style={styles.greeting}>Dashboard</Text>
+                                <Text style={styles.subtitle}>Your financial overview</Text>
+                            </View>
+                            {stats && stats.current_streak > 0 && (
+                                <TouchableOpacity
+                                    style={styles.streakBadge}
+                                    onPress={() => router.push('/achievements')}
+                                    activeOpacity={0.8}
+                                >
+                                    <Text style={styles.streakEmoji}>🔥</Text>
+                                    <Text style={styles.streakText}>{stats.current_streak}</Text>
+                                </TouchableOpacity>
+                            )}
+                        </View>
 
-                        <View style={styles.totalAmountCard}>
-                            <Text style={styles.totalAmountLabel}>Total Due</Text>
+                        <View style={styles.totalCard}>
+                            <Text style={styles.totalLabel}>TOTAL DUE</Text>
                             <Text style={styles.totalAmount}>${totalUpcoming.toFixed(2)}</Text>
-                            <Text style={styles.totalAmountSubtext}>{bills.length} bills this month</Text>
+                            <Text style={styles.totalSubtext}>{bills.length} bills • Next 30 days</Text>
                         </View>
                     </View>
                 </LinearGradient>
 
-                <View style={styles.statsContainer}>
-                    <LinearGradient
-                        colors={Colors.gradient.blue}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.statCard}
-                    >
-                        <Ionicons name="calendar-outline" size={28} color="white" />
+                {/* Quick Stats */}
+                <View style={styles.statsRow}>
+                    <TouchableOpacity style={styles.statCard} activeOpacity={0.8}>
+                        <View style={[styles.statIcon, { backgroundColor: Colors.gradient.blue[0] + '20' }]}>
+                            <Ionicons name="calendar-outline" size={20} color={Colors.gradient.blue[0]} />
+                        </View>
                         <Text style={styles.statValue}>{bills.length}</Text>
                         <Text style={styles.statLabel}>Upcoming</Text>
-                    </LinearGradient>
+                    </TouchableOpacity>
 
-                    <LinearGradient
-                        colors={overdueBills.length > 0 ? Colors.gradient.danger : Colors.gradient.success}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.statCard}
-                    >
-                        <Ionicons
-                            name={overdueBills.length > 0 ? "alert-circle-outline" : "checkmark-circle-outline"}
-                            size={28}
-                            color="white"
-                        />
-                        <Text style={styles.statValue}>{overdueBills.length}</Text>
-                        <Text style={styles.statLabel}>Overdue</Text>
-                    </LinearGradient>
-
-                    <LinearGradient
-                        colors={Colors.gradient.orange}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.statCard}
-                    >
-                        <Ionicons name="time-outline" size={28} color="white" />
+                    <TouchableOpacity style={styles.statCard} activeOpacity={0.8}>
+                        <View style={[styles.statIcon, { backgroundColor: dueTodayBills.length > 0 ? Colors.status.due_today.bg : Colors.status.pending.bg }]}>
+                            <Ionicons
+                                name="time-outline"
+                                size={20}
+                                color={dueTodayBills.length > 0 ? Colors.status.due_today.color : Colors.text.secondary}
+                            />
+                        </View>
                         <Text style={styles.statValue}>{dueTodayBills.length}</Text>
                         <Text style={styles.statLabel}>Due Today</Text>
-                    </LinearGradient>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.statCard} activeOpacity={0.8}>
+                        <View style={[styles.statIcon, { backgroundColor: overdueBills.length > 0 ? Colors.status.overdue.bg : Colors.status.paid.bg }]}>
+                            <Ionicons
+                                name={overdueBills.length > 0 ? "alert-circle-outline" : "checkmark-circle-outline"}
+                                size={20}
+                                color={overdueBills.length > 0 ? Colors.status.overdue.color : Colors.status.paid.color}
+                            />
+                        </View>
+                        <Text style={styles.statValue}>{overdueBills.length}</Text>
+                        <Text style={styles.statLabel}>{overdueBills.length > 0 ? 'Overdue' : 'On Track'}</Text>
+                    </TouchableOpacity>
                 </View>
 
-                {dueTodayBills.length > 0 && (
-                    <LinearGradient
-                        colors={['#FF9F43', '#FDCB6E']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.urgentAlert}
-                    >
-                        <Ionicons name="notifications" size={24} color="white" />
-                        <Text style={styles.urgentText}>
-                            {dueTodayBills.length} bill{dueTodayBills.length > 1 ? 's' : ''} due today!
-                        </Text>
-                    </LinearGradient>
-                )}
-
-                <Text style={styles.sectionTitle}>Upcoming Bills</Text>
+                {/* Section Header */}
+                <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Upcoming Bills</Text>
+                    <TouchableOpacity onPress={() => router.push('/budget')} activeOpacity={0.7}>
+                        <Text style={styles.sectionLink}>View All →</Text>
+                    </TouchableOpacity>
+                </View>
             </View>
         );
     };
 
     if (loading) {
         return (
-            <View style={styles.centered}>
-                <ActivityIndicator size="large" color="#007AFF" />
+            <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={Colors.primary} />
             </View>
         );
     }
 
     return (
         <GestureHandlerRootView style={styles.container}>
-            <FlatList
+            <Animated.FlatList
                 data={bills}
-                renderItem={renderBillItem}
+                renderItem={renderBillCard}
                 keyExtractor={(item) => item.id}
                 ListHeaderComponent={renderHeader}
                 ListEmptyComponent={
                     <View style={styles.emptyState}>
-                        <Ionicons name="checkmark-circle" size={64} color="#4CAF50" />
-                        <Text style={styles.emptyText}>No upcoming bills!</Text>
-                        <Text style={styles.emptySubtext}>Add your first bill to get started</Text>
+                        <LinearGradient
+                            colors={Colors.gradient.primary}
+                            style={styles.emptyIcon}
+                        >
+                            <Ionicons name="checkmark-circle" size={48} color="white" />
+                        </LinearGradient>
+                        <Text style={styles.emptyTitle}>All Caught Up! 🎉</Text>
+                        <Text style={styles.emptyText}>
+                            No upcoming bills. Add your first bill to get started.
+                        </Text>
+                        <TouchableOpacity
+                            style={styles.emptyButton}
+                            onPress={() => router.push('/bill/add')}
+                            activeOpacity={0.8}
+                        >
+                            <LinearGradient
+                                colors={Colors.gradient.primary}
+                                style={styles.emptyButtonGradient}
+                            >
+                                <Ionicons name="add-circle-outline" size={20} color="white" />
+                                <Text style={styles.emptyButtonText}>Add Your First Bill</Text>
+                            </LinearGradient>
+                        </TouchableOpacity>
                     </View>
                 }
                 refreshControl={
-                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        tintColor={Colors.primary}
+                    />
                 }
                 contentContainerStyle={styles.listContent}
+                showsVerticalScrollIndicator={false}
+                onScroll={Animated.event(
+                    [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+                    { useNativeDriver: true }
+                )}
             />
 
+            {/* Floating Action Button */}
             <TouchableOpacity
                 style={styles.fab}
                 onPress={() => router.push('/bill/add')}
+                activeOpacity={0.9}
             >
-                <Ionicons name="add" size={32} color="#fff" />
+                <LinearGradient
+                    colors={Colors.gradient.sunset}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.fabGradient}
+                >
+                    <Ionicons name="add" size={28} color="white" />
+                </LinearGradient>
             </TouchableOpacity>
         </GestureHandlerRootView>
     );
@@ -418,7 +497,7 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: Colors.background,
     },
-    centered: {
+    loadingContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
@@ -427,243 +506,300 @@ const styles = StyleSheet.create({
     listContent: {
         paddingBottom: 100,
     },
-    header: {
-        marginBottom: 16,
+    headerContainer: {
+        paddingTop: Platform.OS === 'ios' ? 60 : 40,
+        paddingBottom: 16,
     },
-    heroSection: {
-        padding: 24,
-        paddingTop: 48,
-        paddingBottom: 32,
-        borderBottomLeftRadius: 32,
-        borderBottomRightRadius: 32,
-        marginBottom: -20,
+    // Hero Card
+    heroCard: {
+        marginHorizontal: CARD_MARGIN,
+        marginBottom: 20,
+        borderRadius: 24,
+        ...Colors.shadow.lg,
     },
     heroContent: {
-        alignItems: 'center',
+        padding: 24,
     },
-    greeting: {
-        fontSize: 32,
-        fontWeight: '800',
-        color: 'white',
-        marginBottom: 8,
-        letterSpacing: 0.5,
-    },
-    subtitle: {
-        fontSize: 16,
-        color: 'rgba(255,255,255,0.9)',
+    heroTop: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
         marginBottom: 24,
     },
-    totalAmountCard: {
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        borderRadius: 20,
-        padding: 24,
-        alignItems: 'center',
-        width: '100%',
-        backdropFilter: 'blur(10px)',
-    },
-    totalAmountLabel: {
-        fontSize: 14,
-        color: 'rgba(255,255,255,0.9)',
-        marginBottom: 8,
-        textTransform: 'uppercase',
-        letterSpacing: 1,
-    },
-    totalAmount: {
-        fontSize: 48,
-        fontWeight: '900',
+    greeting: {
+        fontSize: 28,
+        fontWeight: '800',
         color: 'white',
         marginBottom: 4,
     },
-    totalAmountSubtext: {
-        fontSize: 14,
-        color: 'rgba(255,255,255,0.8)',
+    subtitle: {
+        fontSize: 15,
+        color: 'rgba(255, 255, 255, 0.9)',
+        fontWeight: '500',
     },
-    statsContainer: {
+    streakBadge: {
         flexDirection: 'row',
-        paddingHorizontal: 16,
-        marginTop: 32,
+        alignItems: 'center',
+        backgroundColor: 'rgba(255, 255, 255, 0.25)',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 20,
+    },
+    streakEmoji: {
+        fontSize: 18,
+        marginRight: 4,
+    },
+    streakText: {
+        fontSize: 16,
+        fontWeight: '700',
+        color: 'white',
+    },
+    totalCard: {
+        backgroundColor: 'rgba(255, 255, 255, 0.2)',
+        borderRadius: 16,
+        padding: 20,
+        alignItems: 'center',
+    },
+    totalLabel: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: 'rgba(255, 255, 255, 0.9)',
+        letterSpacing: 1.5,
+        marginBottom: 8,
+    },
+    totalAmount: {
+        fontSize: 48,
+        fontWeight: '800',
+        color: 'white',
+        marginBottom: 4,
+    },
+    totalSubtext: {
+        fontSize: 14,
+        color: 'rgba(255, 255, 255, 0.85)',
+        fontWeight: '500',
+    },
+    // Stats Row
+    statsRow: {
+        flexDirection: 'row',
+        paddingHorizontal: CARD_MARGIN,
         marginBottom: 24,
         gap: 12,
     },
     statCard: {
         flex: 1,
-        padding: 20,
+        backgroundColor: Colors.card,
         borderRadius: 16,
+        padding: 16,
         alignItems: 'center',
-        ...Colors.shadow.md,
+        ...Colors.shadow.sm,
+    },
+    statIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 8,
     },
     statValue: {
         fontSize: 24,
-        fontWeight: '800',
-        color: 'white',
-        marginTop: 8,
-        marginBottom: 4,
+        fontWeight: '700',
+        color: Colors.text.primary,
+        marginBottom: 2,
     },
     statLabel: {
-        fontSize: 11,
-        color: 'rgba(255,255,255,0.9)',
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        fontWeight: '600',
+        fontSize: 12,
+        color: Colors.text.secondary,
+        fontWeight: '500',
     },
-    urgentAlert: {
+    // Section Header
+    sectionHeader: {
         flexDirection: 'row',
+        justifyContent: 'space-between',
         alignItems: 'center',
-        padding: 16,
-        borderRadius: 16,
-        marginHorizontal: 16,
-        marginBottom: 20,
-        ...Colors.shadow.sm,
-    },
-    urgentText: {
-        marginLeft: 12,
-        fontSize: 15,
-        color: 'white',
-        fontWeight: '600',
-        flex: 1,
+        paddingHorizontal: CARD_MARGIN,
+        marginBottom: 16,
     },
     sectionTitle: {
         fontSize: 20,
         fontWeight: '700',
         color: Colors.text.primary,
-        marginHorizontal: 16,
-        marginBottom: 12,
-        marginTop: 8,
     },
+    sectionLink: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: Colors.primary,
+    },
+    // Bill Cards
     billCard: {
-        marginHorizontal: 16,
+        marginHorizontal: CARD_MARGIN,
         marginBottom: 12,
-        borderRadius: 20,
-        overflow: 'hidden',
-        ...Colors.shadow.md,
-    },
-    billCardGradient: {
-        borderRadius: 20,
-    },
-    billCardInner: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: 16,
-    },
-    billCardLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flex: 1,
-    },
-    billIcon: {
-        width: 56,
-        height: 56,
+        backgroundColor: Colors.card,
         borderRadius: 16,
+        overflow: 'hidden',
+        ...Colors.shadow.sm,
+    },
+    categoryBar: {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: 4,
+    },
+    billCardContent: {
+        flexDirection: 'row',
         alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: 16,
+        paddingLeft: 20,
+    },
+    billLeft: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginRight: 12,
+    },
+    categoryIcon: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
         justifyContent: 'center',
-        marginRight: 16,
+        alignItems: 'center',
+        marginRight: 12,
     },
     billInfo: {
         flex: 1,
     },
     billName: {
-        fontSize: 17,
-        fontWeight: '700',
+        fontSize: 16,
+        fontWeight: '600',
         color: Colors.text.primary,
         marginBottom: 6,
     },
     billMeta: {
         flexDirection: 'row',
         alignItems: 'center',
+        gap: 8,
     },
-    billDate: {
-        fontSize: 14,
-        color: Colors.text.secondary,
-        marginLeft: 6,
-        fontWeight: '500',
-    },
-    billCardRight: {
-        alignItems: 'flex-end',
-    },
-    billAmount: {
-        fontSize: 22,
-        fontWeight: '800',
-        color: Colors.text.primary,
-        marginBottom: 6,
-    },
-    autoPayBadge: {
+    statusBadge: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: 'rgba(0, 184, 148, 0.1)',
         paddingHorizontal: 8,
         paddingVertical: 4,
         borderRadius: 8,
+        gap: 4,
     },
-    autoPayText: {
-        marginLeft: 4,
+    statusText: {
         fontSize: 11,
-        color: Colors.success,
         fontWeight: '600',
     },
-    emptyState: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingVertical: 80,
-        paddingHorizontal: 32,
-    },
-    emptyText: {
-        fontSize: 22,
-        fontWeight: '700',
-        color: Colors.text.primary,
-        marginTop: 24,
-    },
-    emptySubtext: {
-        fontSize: 15,
-        color: Colors.text.secondary,
-        marginTop: 8,
-        textAlign: 'center',
-    },
-    fab: {
-        position: 'absolute',
-        right: 24,
-        bottom: 24,
-        width: 64,
-        height: 64,
-        borderRadius: 32,
-        backgroundColor: Colors.primary,
-        alignItems: 'center',
-        justifyContent: 'center',
-        ...Colors.shadow.lg,
-    },
-    swipeActions: {
+    autoBadge: {
         flexDirection: 'row',
         alignItems: 'center',
+        backgroundColor: Colors.warning + '20',
+        paddingHorizontal: 6,
+        paddingVertical: 3,
+        borderRadius: 6,
+        gap: 2,
     },
-    markPaidButton: {
-        marginRight: 16,
-        borderRadius: 16,
-        overflow: 'hidden',
+    autoText: {
+        fontSize: 10,
+        fontWeight: '600',
+        color: Colors.warning,
     },
-    markPaidGradient: {
-        width: 100,
-        height: '100%',
-        justifyContent: 'center',
-        alignItems: 'center',
-        paddingVertical: 16,
+    billRight: {
+        alignItems: 'flex-end',
     },
-    editButton: {
-        marginLeft: 16,
-        borderRadius: 16,
-        overflow: 'hidden',
-    },
-    editButtonGradient: {
-        width: 100,
-        height: '100%',
-        justifyContent: 'center',
-        alignItems: 'center',
-        paddingVertical: 16,
-    },
-    swipeActionText: {
-        color: 'white',
-        fontSize: 13,
+    billAmount: {
+        fontSize: 20,
         fontWeight: '700',
-        marginTop: 4,
+        color: Colors.text.primary,
+        marginBottom: 4,
+    },
+    billDate: {
+        fontSize: 13,
+        fontWeight: '500',
+        color: Colors.text.secondary,
+    },
+    // Swipe Actions
+    swipeAction: {
+        justifyContent: 'center',
+        marginBottom: 12,
+    },
+    swipeButton: {
+        width: 80,
+        height: '100%',
+        borderRadius: 16,
+        overflow: 'hidden',
+    },
+    swipeGradient: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 4,
+    },
+    swipeText: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: 'white',
+    },
+    // Empty State
+    emptyState: {
+        alignItems: 'center',
+        paddingTop: 60,
+        paddingHorizontal: 40,
+    },
+    emptyIcon: {
+        width: 96,
+        height: 96,
+        borderRadius: 48,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 24,
+    },
+    emptyTitle: {
+        fontSize: 24,
+        fontWeight: '700',
+        color: Colors.text.primary,
+        marginBottom: 8,
+    },
+    emptyText: {
+        fontSize: 15,
+        color: Colors.text.secondary,
+        textAlign: 'center',
+        lineHeight: 22,
+        marginBottom: 32,
+    },
+    emptyButton: {
+        borderRadius: 16,
+        overflow: 'hidden',
+    },
+    emptyButtonGradient: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 16,
+        paddingHorizontal: 32,
+        gap: 8,
+    },
+    emptyButtonText: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: 'white',
+    },
+    // FAB
+    fab: {
+        position: 'absolute',
+        right: 20,
+        bottom: 20,
+        borderRadius: 28,
+        ...Colors.shadow.colored,
+    },
+    fabGradient: {
+        width: 56,
+        height: 56,
+        borderRadius: 28,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
 });
 

@@ -8,97 +8,71 @@ import {
     Switch,
     Alert,
     ActivityIndicator,
+    Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../../lib/supabase';
-import { UserSettings } from '../../lib/types';
 import {
     isBiometricSupported,
     isBiometricEnabled,
     setBiometricEnabled,
     isAppLockEnabled,
     setAppLockEnabled,
-    authenticateWithBiometrics,
     setupBiometricAuth,
     getBiometricName,
 } from '../../lib/biometric';
+import { rescheduleAllSmartNotifications } from '../../lib/smartNotifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Colors } from '../../constants/Colors';
+
+const CARD_MARGIN = 16;
 
 export default function SettingsScreen() {
     const [loading, setLoading] = useState(true);
-    const [settings, setSettings] = useState<UserSettings | null>(null);
+    const [user, setUser] = useState<any>(null);
     const [pushToken, setPushToken] = useState<string | null>(null);
     const [biometricSupported, setBiometricSupported] = useState(false);
     const [biometricEnabled, setBiometricEnabledState] = useState(false);
     const [appLockEnabled, setAppLockEnabledState] = useState(false);
     const [biometricTypes, setBiometricTypes] = useState<string[]>([]);
+    const [smartNotificationsEnabled, setSmartNotificationsEnabled] = useState(true);
+    const [weeklySummaryEnabled, setWeeklySummaryEnabled] = useState(true);
+    const [monthSummaryEnabled, setMonthSummaryEnabled] = useState(true);
 
     useEffect(() => {
         loadSettings();
         registerForPushNotifications();
         checkBiometricSupport();
+        loadSmartNotificationSettings();
     }, []);
-
-    const checkBiometricSupport = async () => {
-        const setup = await setupBiometricAuth();
-        setBiometricSupported(setup.supported && setup.enrolled);
-        setBiometricTypes(setup.types);
-
-        if (setup.supported && setup.enrolled) {
-            const enabled = await isBiometricEnabled();
-            const lockEnabled = await isAppLockEnabled();
-            setBiometricEnabledState(enabled);
-            setAppLockEnabledState(lockEnabled);
-        }
-    };
 
     const loadSettings = async () => {
         try {
-            const { data: { user } } = await supabase.auth.getUser();
-
-            if (!user) {
-                router.replace('/auth/login');
-                return;
-            }
-
-            const { data, error } = await supabase
-                .from('user_settings')
-                .select('*')
-                .eq('user_id', user.id)
-                .single();
-
-            if (error && error.code !== 'PGRST116') {
-                throw error;
-            }
-
-            if (data) {
-                setSettings(data);
-            } else {
-                // Create default settings
-                const defaultSettings = {
-                    user_id: user.id,
-                    email_notifications: true,
-                    push_notifications: true,
-                    notification_time: '09:00:00',
-                    currency: 'USD',
-                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                };
-
-                const { data: newSettings, error: insertError } = await supabase
-                    .from('user_settings')
-                    .insert(defaultSettings)
-                    .select()
-                    .single();
-
-                if (insertError) throw insertError;
-                setSettings(newSettings);
+            const { data: { user: currentUser } } = await supabase.auth.getUser();
+            if (currentUser) {
+                setUser(currentUser);
             }
         } catch (error) {
             console.error('Error loading settings:', error);
-            Alert.alert('Error', 'Failed to load settings');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const loadSmartNotificationSettings = async () => {
+        try {
+            const smart = await AsyncStorage.getItem('@smart_notifications_enabled');
+            const weekly = await AsyncStorage.getItem('@weekly_summary_enabled');
+            const monthly = await AsyncStorage.getItem('@month_summary_enabled');
+
+            setSmartNotificationsEnabled(smart !== 'false');
+            setWeeklySummaryEnabled(weekly !== 'false');
+            setMonthSummaryEnabled(monthly !== 'false');
+        } catch (error) {
+            console.error('Error loading smart notification settings:', error);
         }
     };
 
@@ -113,121 +87,111 @@ export default function SettingsScreen() {
             }
 
             if (finalStatus !== 'granted') {
-                console.log('Notification permissions not granted');
                 return;
             }
 
-            // Try to get Expo push token (requires Expo project ID)
-            // This is optional - local notifications work without it
-            try {
-                const token = (await Notifications.getExpoPushTokenAsync()).data;
-                setPushToken(token);
-
-                // Save token to database
-                const { data: { user } } = await supabase.auth.getUser();
-                if (user) {
-                    await supabase
-                        .from('user_settings')
-                        .update({ expo_push_token: token })
-                        .eq('user_id', user.id);
-                }
-                console.log('Push token registered successfully');
-            } catch (pushTokenError) {
-                // Push token registration failed (probably missing Expo project ID)
-                // This is OK - local notifications will still work
-                console.log('Push token registration skipped (local notifications will still work)');
-            }
+            const token = await Notifications.getExpoPushTokenAsync();
+            setPushToken(token.data);
         } catch (error) {
-            console.error('Error with notifications:', error);
-            // Don't throw - allow settings screen to load
+            console.error('Error registering for push notifications:', error);
         }
     };
 
-    const updateSetting = async (key: keyof UserSettings, value: any) => {
-        if (!settings) return;
-
+    const checkBiometricSupport = async () => {
         try {
-            const { error } = await supabase
-                .from('user_settings')
-                .update({ [key]: value })
-                .eq('id', settings.id);
+            const { supported, enrolled, types } = await setupBiometricAuth();
+            setBiometricSupported(supported && enrolled);
+            setBiometricTypes(types);
 
-            if (error) throw error;
+            if (supported && enrolled) {
+                const enabled = await isBiometricEnabled();
+                setBiometricEnabledState(enabled);
 
-            setSettings({ ...settings, [key]: value });
+                const lockEnabled = await isAppLockEnabled();
+                setAppLockEnabledState(lockEnabled);
+            }
         } catch (error) {
-            console.error('Error updating setting:', error);
-            Alert.alert('Error', 'Failed to update setting');
+            console.error('Error checking biometric support:', error);
         }
     };
 
     const handleBiometricToggle = async (value: boolean) => {
-        if (value) {
-            // Test biometric authentication before enabling
-            const result = await authenticateWithBiometrics(
-                'Authenticate to enable biometric security'
-            );
-
-            if (result.success) {
-                await setBiometricEnabled(true);
-                setBiometricEnabledState(true);
-                Alert.alert('Success', `${getBiometricName()} enabled successfully!`);
-            } else {
-                Alert.alert('Authentication Failed', result.error || 'Could not authenticate');
-            }
-        } else {
-            await setBiometricEnabled(false);
-            setBiometricEnabledState(false);
-            // Also disable app lock when disabling biometrics
-            await setAppLockEnabled(false);
-            setAppLockEnabledState(false);
+        try {
+            await setBiometricEnabled(value);
+            setBiometricEnabledState(value);
+            Alert.alert('✅ Updated', `Biometric authentication ${value ? 'enabled' : 'disabled'}`);
+        } catch (error) {
+            console.error('Error toggling biometric:', error);
+            Alert.alert('Error', 'Failed to update biometric settings');
         }
     };
 
     const handleAppLockToggle = async (value: boolean) => {
-        if (value) {
-            // Require biometric to be enabled first
-            if (!biometricEnabled) {
-                Alert.alert(
-                    'Enable Biometric First',
-                    `Please enable ${getBiometricName()} before enabling app lock.`
-                );
-                return;
-            }
+        try {
+            await setAppLockEnabled(value);
+            setAppLockEnabledState(value);
+            Alert.alert('✅ Updated', `App lock ${value ? 'enabled' : 'disabled'}`);
+        } catch (error) {
+            console.error('Error toggling app lock:', error);
+            Alert.alert('Error', 'Failed to update app lock settings');
+        }
+    };
 
-            // Test biometric authentication before enabling app lock
-            const result = await authenticateWithBiometrics(
-                'Authenticate to enable app lock'
-            );
-
-            if (result.success) {
-                await setAppLockEnabled(true);
-                setAppLockEnabledState(true);
-                Alert.alert(
-                    'App Lock Enabled',
-                    'The app will now require authentication when you open it.'
-                );
-            } else {
-                Alert.alert('Authentication Failed', result.error || 'Could not authenticate');
+    const handleSmartNotificationsToggle = async (value: boolean) => {
+        try {
+            await AsyncStorage.setItem('@smart_notifications_enabled', value.toString());
+            setSmartNotificationsEnabled(value);
+            if (user) {
+                await rescheduleAllSmartNotifications(user.id);
             }
-        } else {
-            await setAppLockEnabled(false);
-            setAppLockEnabledState(false);
+            Alert.alert('✅ Updated', `Smart notifications ${value ? 'enabled' : 'disabled'}`);
+        } catch (error) {
+            console.error('Error toggling smart notifications:', error);
+            Alert.alert('Error', 'Failed to update notification settings');
+        }
+    };
+
+    const handleWeeklySummaryToggle = async (value: boolean) => {
+        try {
+            await AsyncStorage.setItem('@weekly_summary_enabled', value.toString());
+            setWeeklySummaryEnabled(value);
+            if (user) {
+                await rescheduleAllSmartNotifications(user.id);
+            }
+        } catch (error) {
+            console.error('Error toggling weekly summary:', error);
+        }
+    };
+
+    const handleMonthSummaryToggle = async (value: boolean) => {
+        try {
+            await AsyncStorage.setItem('@month_summary_enabled', value.toString());
+            setMonthSummaryEnabled(value);
+            if (user) {
+                await rescheduleAllSmartNotifications(user.id);
+            }
+        } catch (error) {
+            console.error('Error toggling month summary:', error);
         }
     };
 
     const handleLogout = async () => {
         Alert.alert(
-            'Logout',
-            'Are you sure you want to logout?',
+            'Log Out',
+            'Are you sure you want to log out?',
             [
                 { text: 'Cancel', style: 'cancel' },
                 {
-                    text: 'Logout',
+                    text: 'Log Out',
                     style: 'destructive',
                     onPress: async () => {
-                        await supabase.auth.signOut();
-                        router.replace('/auth/login');
+                        try {
+                            await supabase.auth.signOut();
+                            router.replace('/auth/login');
+                        } catch (error) {
+                            console.error('Error logging out:', error);
+                            Alert.alert('Error', 'Failed to log out');
+                        }
                     },
                 },
             ]
@@ -236,267 +200,374 @@ export default function SettingsScreen() {
 
     if (loading) {
         return (
-            <View style={styles.centered}>
-                <ActivityIndicator size="large" color="#007AFF" />
+            <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={Colors.primary} />
             </View>
         );
     }
 
     return (
-        <ScrollView style={styles.container}>
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Notifications</Text>
-
-                <View style={styles.settingRow}>
-                    <View style={styles.settingInfo}>
-                        <Ionicons name="notifications" size={24} color="#007AFF" />
-                        <View style={styles.settingText}>
-                            <Text style={styles.settingLabel}>Push Notifications</Text>
-                            <Text style={styles.settingDescription}>
-                                Get notified about upcoming bills
-                            </Text>
-                        </View>
+        <View style={styles.container}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Profile Header */}
+                <LinearGradient
+                    colors={Colors.gradient.primary}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.profileHeader}
+                >
+                    <View style={styles.avatarContainer}>
+                        <Ionicons name="person" size={48} color="white" />
                     </View>
-                    <Switch
-                        value={settings?.push_notifications}
-                        onValueChange={(value) => updateSetting('push_notifications', value)}
-                        trackColor={{ false: '#767577', true: '#81b0ff' }}
-                        thumbColor={settings?.push_notifications ? '#007AFF' : '#f4f3f4'}
-                    />
+                    <Text style={styles.userEmail}>{user?.email || 'User'}</Text>
+                    <Text style={styles.userSubtext}>Manage your account settings</Text>
+                </LinearGradient>
+
+                {/* Quick Actions */}
+                <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Quick Access</Text>
+                    <View style={styles.quickActionsGrid}>
+                        <TouchableOpacity
+                            style={styles.quickActionCard}
+                            onPress={() => router.push('/budget')}
+                            activeOpacity={0.8}
+                        >
+                            <LinearGradient
+                                colors={Colors.gradient.ocean}
+                                style={styles.quickActionIcon}
+                            >
+                                <Ionicons name="wallet" size={28} color="white" />
+                            </LinearGradient>
+                            <Text style={styles.quickActionText}>Budget</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.quickActionCard}
+                            onPress={() => router.push('/achievements')}
+                            activeOpacity={0.8}
+                        >
+                            <LinearGradient
+                                colors={Colors.gradient.sunset}
+                                style={styles.quickActionIcon}
+                            >
+                                <Ionicons name="trophy" size={28} color="white" />
+                            </LinearGradient>
+                            <Text style={styles.quickActionText}>Achievements</Text>
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
-                <View style={styles.settingRow}>
-                    <View style={styles.settingInfo}>
-                        <Ionicons name="mail" size={24} color="#007AFF" />
-                        <View style={styles.settingText}>
-                            <Text style={styles.settingLabel}>Email Notifications</Text>
-                            <Text style={styles.settingDescription}>
-                                Receive email reminders
-                            </Text>
-                        </View>
-                    </View>
-                    <Switch
-                        value={settings?.email_notifications}
-                        onValueChange={(value) => updateSetting('email_notifications', value)}
-                        trackColor={{ false: '#767577', true: '#81b0ff' }}
-                        thumbColor={settings?.email_notifications ? '#007AFF' : '#f4f3f4'}
-                    />
-                </View>
-
-                {pushToken && (
-                    <View style={styles.infoBox}>
-                        <Ionicons name="information-circle" size={20} color="#007AFF" />
-                        <Text style={styles.infoText}>
-                            Push notifications are enabled
-                        </Text>
-                    </View>
-                )}
-            </View>
-
-            {/* Security Section */}
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Security</Text>
-
-                {biometricSupported ? (
-                    <>
-                        <View style={styles.settingRow}>
-                            <View style={styles.settingInfo}>
-                                <Ionicons name="finger-print" size={24} color="#007AFF" />
-                                <View style={styles.settingText}>
-                                    <Text style={styles.settingLabel}>{getBiometricName()}</Text>
-                                    <Text style={styles.settingDescription}>
-                                        Secure your app with {biometricTypes.join(' or ')}
-                                    </Text>
-                                </View>
-                            </View>
-                            <Switch
-                                value={biometricEnabled}
-                                onValueChange={handleBiometricToggle}
-                                trackColor={{ false: '#767577', true: '#81b0ff' }}
-                                thumbColor={biometricEnabled ? '#007AFF' : '#f4f3f4'}
-                            />
-                        </View>
-
-                        {biometricEnabled && (
-                            <View style={styles.settingRow}>
-                                <View style={styles.settingInfo}>
-                                    <Ionicons name="lock-closed" size={24} color="#007AFF" />
-                                    <View style={styles.settingText}>
-                                        <Text style={styles.settingLabel}>App Lock</Text>
+                {/* Security */}
+                {biometricSupported && (
+                    <View style={styles.section}>
+                        <Text style={styles.sectionTitle}>Security</Text>
+                        <View style={styles.settingsCard}>
+                            <View style={styles.settingItem}>
+                                <View style={styles.settingLeft}>
+                                    <View style={[styles.settingIcon, { backgroundColor: Colors.primary + '20' }]}>
+                                        <Ionicons name="finger-print" size={22} color={Colors.primary} />
+                                    </View>
+                                    <View style={styles.settingInfo}>
+                                        <Text style={styles.settingTitle}>Biometric Authentication</Text>
                                         <Text style={styles.settingDescription}>
-                                            Require authentication when opening app
+                                            Use {biometricTypes.join(' or ')} to log in
+                                        </Text>
+                                    </View>
+                                </View>
+                                <Switch
+                                    value={biometricEnabled}
+                                    onValueChange={handleBiometricToggle}
+                                    trackColor={{ false: Colors.background, true: Colors.primary + '50' }}
+                                    thumbColor={biometricEnabled ? Colors.primary : Colors.text.light}
+                                />
+                            </View>
+
+                            <View style={styles.divider} />
+
+                            <View style={styles.settingItem}>
+                                <View style={styles.settingLeft}>
+                                    <View style={[styles.settingIcon, { backgroundColor: Colors.warning + '20' }]}>
+                                        <Ionicons name="lock-closed" size={22} color={Colors.warning} />
+                                    </View>
+                                    <View style={styles.settingInfo}>
+                                        <Text style={styles.settingTitle}>App Lock</Text>
+                                        <Text style={styles.settingDescription}>
+                                            Require authentication on app launch
                                         </Text>
                                     </View>
                                 </View>
                                 <Switch
                                     value={appLockEnabled}
                                     onValueChange={handleAppLockToggle}
-                                    trackColor={{ false: '#767577', true: '#81b0ff' }}
-                                    thumbColor={appLockEnabled ? '#007AFF' : '#f4f3f4'}
+                                    trackColor={{ false: Colors.background, true: Colors.warning + '50' }}
+                                    thumbColor={appLockEnabled ? Colors.warning : Colors.text.light}
                                 />
                             </View>
-                        )}
-                    </>
-                ) : (
-                    <View style={styles.infoBox}>
-                        <Ionicons name="information-circle" size={20} color="#999" />
-                        <Text style={styles.infoText}>
-                            Biometric authentication is not available on this device. Please set up Face ID, Touch ID, or Fingerprint in device settings.
-                        </Text>
+                        </View>
                     </View>
                 )}
-            </View>
 
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Preferences</Text>
-
-                <TouchableOpacity
-                    style={styles.settingRow}
-                    onPress={() => router.push('/budget')}
-                >
-                    <View style={styles.settingInfo}>
-                        <Ionicons name="wallet" size={24} color="#007AFF" />
-                        <View style={styles.settingText}>
-                            <Text style={styles.settingLabel}>Budget Tracking</Text>
-                            <Text style={styles.settingDescription}>
-                                Manage monthly spending limits
-                            </Text>
+                {/* Notifications */}
+                <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Notifications</Text>
+                    <View style={styles.settingsCard}>
+                        <View style={styles.settingItem}>
+                            <View style={styles.settingLeft}>
+                                <View style={[styles.settingIcon, { backgroundColor: Colors.info + '20' }]}>
+                                    <Ionicons name="notifications" size={22} color={Colors.info} />
+                                </View>
+                                <View style={styles.settingInfo}>
+                                    <Text style={styles.settingTitle}>Smart Notifications</Text>
+                                    <Text style={styles.settingDescription}>
+                                        Contextual bill reminders
+                                    </Text>
+                                </View>
+                            </View>
+                            <Switch
+                                value={smartNotificationsEnabled}
+                                onValueChange={handleSmartNotificationsToggle}
+                                trackColor={{ false: Colors.background, true: Colors.info + '50' }}
+                                thumbColor={smartNotificationsEnabled ? Colors.info : Colors.text.light}
+                            />
                         </View>
-                    </View>
-                    <Ionicons name="chevron-forward" size={20} color="#999" />
-                </TouchableOpacity>
 
-                <TouchableOpacity style={styles.settingRow}>
-                    <View style={styles.settingInfo}>
-                        <Ionicons name="cash" size={24} color="#007AFF" />
-                        <View style={styles.settingText}>
-                            <Text style={styles.settingLabel}>Currency</Text>
-                            <Text style={styles.settingDescription}>
-                                {settings?.currency || 'USD'}
-                            </Text>
+                        <View style={styles.divider} />
+
+                        <View style={styles.settingItem}>
+                            <View style={styles.settingLeft}>
+                                <View style={[styles.settingIcon, { backgroundColor: Colors.success + '20' }]}>
+                                    <Ionicons name="calendar" size={22} color={Colors.success} />
+                                </View>
+                                <View style={styles.settingInfo}>
+                                    <Text style={styles.settingTitle}>Weekly Summary</Text>
+                                    <Text style={styles.settingDescription}>
+                                        Monday morning recap
+                                    </Text>
+                                </View>
+                            </View>
+                            <Switch
+                                value={weeklySummaryEnabled}
+                                onValueChange={handleWeeklySummaryToggle}
+                                trackColor={{ false: Colors.background, true: Colors.success + '50' }}
+                                thumbColor={weeklySummaryEnabled ? Colors.success : Colors.text.light}
+                                disabled={!smartNotificationsEnabled}
+                            />
                         </View>
-                    </View>
-                    <Ionicons name="chevron-forward" size={20} color="#999" />
-                </TouchableOpacity>
 
-                <TouchableOpacity style={styles.settingRow}>
-                    <View style={styles.settingInfo}>
-                        <Ionicons name="time" size={24} color="#007AFF" />
-                        <View style={styles.settingText}>
-                            <Text style={styles.settingLabel}>Notification Time</Text>
-                            <Text style={styles.settingDescription}>
-                                {settings?.notification_time || '09:00 AM'}
-                            </Text>
-                        </View>
-                    </View>
-                    <Ionicons name="chevron-forward" size={20} color="#999" />
-                </TouchableOpacity>
-            </View>
+                        <View style={styles.divider} />
 
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>About</Text>
-
-                <View style={styles.settingRow}>
-                    <View style={styles.settingInfo}>
-                        <Ionicons name="information-circle" size={24} color="#007AFF" />
-                        <View style={styles.settingText}>
-                            <Text style={styles.settingLabel}>Version</Text>
-                            <Text style={styles.settingDescription}>1.0.0</Text>
+                        <View style={styles.settingItem}>
+                            <View style={styles.settingLeft}>
+                                <View style={[styles.settingIcon, { backgroundColor: Colors.accent + '20' }]}>
+                                    <Ionicons name="stats-chart" size={22} color={Colors.accent} />
+                                </View>
+                                <View style={styles.settingInfo}>
+                                    <Text style={styles.settingTitle}>Month-End Summary</Text>
+                                    <Text style={styles.settingDescription}>
+                                        Monthly spending recap
+                                    </Text>
+                                </View>
+                            </View>
+                            <Switch
+                                value={monthSummaryEnabled}
+                                onValueChange={handleMonthSummaryToggle}
+                                trackColor={{ false: Colors.background, true: Colors.accent + '50' }}
+                                thumbColor={monthSummaryEnabled ? Colors.accent : Colors.text.light}
+                                disabled={!smartNotificationsEnabled}
+                            />
                         </View>
                     </View>
                 </View>
-            </View>
 
-            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-                <Ionicons name="log-out" size={24} color="#F44336" />
-                <Text style={styles.logoutText}>Logout</Text>
-            </TouchableOpacity>
-        </ScrollView>
+                {/* About */}
+                <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>About</Text>
+                    <View style={styles.settingsCard}>
+                        <TouchableOpacity style={styles.settingItem} activeOpacity={0.7}>
+                            <View style={styles.settingLeft}>
+                                <View style={[styles.settingIcon, { backgroundColor: Colors.primary + '20' }]}>
+                                    <Ionicons name="information-circle" size={22} color={Colors.primary} />
+                                </View>
+                                <View style={styles.settingInfo}>
+                                    <Text style={styles.settingTitle}>App Version</Text>
+                                    <Text style={styles.settingDescription}>1.0.0</Text>
+                                </View>
+                            </View>
+                            <Ionicons name="chevron-forward" size={20} color={Colors.text.light} />
+                        </TouchableOpacity>
+
+                        {pushToken && (
+                            <>
+                                <View style={styles.divider} />
+                                <View style={styles.settingItem}>
+                                    <View style={styles.settingLeft}>
+                                        <View style={[styles.settingIcon, { backgroundColor: Colors.success + '20' }]}>
+                                            <Ionicons name="checkmark-circle" size={22} color={Colors.success} />
+                                        </View>
+                                        <View style={styles.settingInfo}>
+                                            <Text style={styles.settingTitle}>Push Notifications</Text>
+                                            <Text style={styles.settingDescription}>Registered</Text>
+                                        </View>
+                                    </View>
+                                </View>
+                            </>
+                        )}
+                    </View>
+                </View>
+
+                {/* Logout */}
+                <View style={styles.section}>
+                    <TouchableOpacity
+                        style={styles.logoutButton}
+                        onPress={handleLogout}
+                        activeOpacity={0.8}
+                    >
+                        <Ionicons name="log-out-outline" size={22} color={Colors.danger} />
+                        <Text style={styles.logoutText}>Log Out</Text>
+                    </TouchableOpacity>
+                </View>
+
+                <View style={{ height: 40 }} />
+            </ScrollView>
+        </View>
     );
 }
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: Colors.background,
     },
-    centered: {
+    loadingContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        backgroundColor: Colors.background,
     },
+    // Profile Header
+    profileHeader: {
+        paddingTop: Platform.OS === 'ios' ? 80 : 60,
+        paddingBottom: 40,
+        paddingHorizontal: CARD_MARGIN,
+        alignItems: 'center',
+        marginBottom: 24,
+    },
+    avatarContainer: {
+        width: 100,
+        height: 100,
+        borderRadius: 50,
+        backgroundColor: 'rgba(255,255,255,0.2)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    userEmail: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: 'white',
+        marginBottom: 6,
+    },
+    userSubtext: {
+        fontSize: 14,
+        color: 'rgba(255,255,255,0.85)',
+    },
+    // Section
     section: {
-        marginTop: 20,
-        backgroundColor: '#fff',
-        paddingHorizontal: 16,
+        paddingHorizontal: CARD_MARGIN,
+        marginBottom: 24,
     },
     sectionTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        color: Colors.text.primary,
+        marginBottom: 12,
+    },
+    // Quick Actions
+    quickActionsGrid: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    quickActionCard: {
+        flex: 1,
+        backgroundColor: Colors.card,
+        borderRadius: 16,
+        padding: 20,
+        alignItems: 'center',
+        ...Colors.shadow.sm,
+    },
+    quickActionIcon: {
+        width: 60,
+        height: 60,
+        borderRadius: 30,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 12,
+    },
+    quickActionText: {
         fontSize: 14,
         fontWeight: '600',
-        color: '#666',
-        textTransform: 'uppercase',
-        marginBottom: 12,
-        marginTop: 12,
-        paddingHorizontal: 4,
+        color: Colors.text.primary,
     },
-    settingRow: {
+    // Settings Card
+    settingsCard: {
+        backgroundColor: Colors.card,
+        borderRadius: 16,
+        ...Colors.shadow.sm,
+    },
+    settingItem: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
         alignItems: 'center',
-        paddingVertical: 16,
-        borderBottomWidth: 1,
-        borderBottomColor: '#f0f0f0',
+        justifyContent: 'space-between',
+        padding: 16,
+    },
+    settingLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+        gap: 12,
+    },
+    settingIcon: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
     settingInfo: {
-        flexDirection: 'row',
-        alignItems: 'center',
         flex: 1,
     },
-    settingText: {
-        marginLeft: 12,
-        flex: 1,
-    },
-    settingLabel: {
+    settingTitle: {
         fontSize: 16,
-        fontWeight: '500',
-        color: '#333',
-        marginBottom: 2,
+        fontWeight: '600',
+        color: Colors.text.primary,
+        marginBottom: 4,
     },
     settingDescription: {
-        fontSize: 14,
-        color: '#666',
+        fontSize: 13,
+        color: Colors.text.secondary,
     },
-    infoBox: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: '#E3F2FD',
-        padding: 12,
-        borderRadius: 8,
-        marginVertical: 12,
+    divider: {
+        height: 1,
+        backgroundColor: Colors.background,
+        marginHorizontal: 16,
     },
-    infoText: {
-        marginLeft: 8,
-        fontSize: 14,
-        color: '#007AFF',
-    },
+    // Logout
     logoutButton: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: '#fff',
+        backgroundColor: Colors.card,
         padding: 16,
-        marginTop: 20,
-        marginBottom: 40,
-        marginHorizontal: 16,
-        borderRadius: 8,
+        borderRadius: 16,
+        gap: 10,
         borderWidth: 1,
-        borderColor: '#F44336',
+        borderColor: Colors.danger + '30',
+        ...Colors.shadow.sm,
     },
     logoutText: {
-        marginLeft: 8,
         fontSize: 16,
         fontWeight: '600',
-        color: '#F44336',
+        color: Colors.danger,
     },
 });
 

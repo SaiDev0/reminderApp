@@ -1,35 +1,66 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function TabLayout() {
+    const insets = useSafeAreaInsets();
+
     return (
         <Tabs
             screenOptions={{
-                tabBarActiveTintColor: '#007AFF',
-                headerStyle: {
-                    backgroundColor: '#007AFF',
+                tabBarActiveTintColor: '#6C5CE7',
+                tabBarInactiveTintColor: '#B2BEC3',
+                tabBarStyle: {
+                    backgroundColor: '#FFFFFF',
+                    borderTopWidth: 0,
+                    elevation: 20,
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: -4 },
+                    shadowOpacity: 0.15,
+                    shadowRadius: 12,
+                    height: 70 + insets.bottom,
+                    paddingTop: 8,
+                    paddingBottom: insets.bottom > 0 ? insets.bottom : 8,
+                    borderTopLeftRadius: 20,
+                    borderTopRightRadius: 20,
+                    position: 'absolute',
                 },
-                headerTintColor: '#fff',
-                headerTitleStyle: {
-                    fontWeight: 'bold',
+                tabBarLabelStyle: {
+                    fontSize: 11,
+                    fontWeight: '600',
+                    marginTop: 4,
+                    marginBottom: Platform.OS === 'ios' ? 4 : 0,
                 },
+                tabBarIconStyle: {
+                    marginTop: 4,
+                },
+                headerShown: false, // Hide all headers - screens have their own hero sections
             }}
         >
             <Tabs.Screen
                 name="index"
                 options={{
                     title: 'Dashboard',
-                    tabBarIcon: ({ color, size }) => (
-                        <Ionicons name="home" size={size} color={color} />
+                    tabBarIcon: ({ color, focused }) => (
+                        <Ionicons
+                            name={focused ? "home" : "home-outline"}
+                            size={26}
+                            color={color}
+                        />
                     ),
                 }}
             />
             <Tabs.Screen
                 name="bills"
                 options={{
-                    title: 'All Bills',
-                    tabBarIcon: ({ color, size }) => (
-                        <Ionicons name="list" size={size} color={color} />
+                    title: 'Bills',
+                    tabBarIcon: ({ color, focused }) => (
+                        <Ionicons
+                            name={focused ? "document-text" : "document-text-outline"}
+                            size={26}
+                            color={color}
+                        />
                     ),
                 }}
             />
@@ -37,8 +68,12 @@ export default function TabLayout() {
                 name="history"
                 options={{
                     title: 'History',
-                    tabBarIcon: ({ color, size }) => (
-                        <Ionicons name="time" size={size} color={color} />
+                    tabBarIcon: ({ color, focused }) => (
+                        <Ionicons
+                            name={focused ? "receipt" : "receipt-outline"}
+                            size={26}
+                            color={color}
+                        />
                     ),
                 }}
             />
@@ -46,8 +81,12 @@ export default function TabLayout() {
                 name="settings"
                 options={{
                     title: 'Settings',
-                    tabBarIcon: ({ color, size }) => (
-                        <Ionicons name="settings" size={size} color={color} />
+                    tabBarIcon: ({ color, focused }) => (
+                        <Ionicons
+                            name={focused ? "settings" : "settings-outline"}
+                            size={26}
+                            color={color}
+                        />
                     ),
                 }}
             />
